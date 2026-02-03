@@ -1,0 +1,174 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  name      String
+  password  String   // Hashed
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Preferences stored as JSON string
+  preferences String @default("{\"voiceSpeed\":1.0,\"verbosity\":\"normal\",\"stepLengthCm\":70}")
+
+  flatMaps          FlatMap[]
+  navigationSessions NavigationSession[]
+}
+
+model FlatMap {
+  id        String   @id @default(uuid())
+  userId    String
+  name      String   // "My Apartment"
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Origin reference point (JSON)
+  // { description: "Front door", compassHeading: 0 }
+  origin String
+
+  user  User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  rooms Room[]
+  navigationSessions NavigationSession[]
+
+  @@index([userId])
+}
+
+model Room {
+  id        String   @id @default(uuid())
+  flatMapId String
+  type      String   // bedroom, bathroom, kitchen, corridor, etc.
+  name      String   // "Master Bedroom"
+  
+  // Position relative to flat origin (in steps)
+  positionX Float
+  positionY Float
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  flatMap         FlatMap          @relation(fields: [flatMapId], references: [id], onDelete: Cascade)
+  doorways        Doorway[]        @relation("FromRoom")
+  incomingDoorways Doorway[]       @relation("ToRoom")
+  landmarks       Landmark[]
+  referenceImages ReferenceImage[]
+
+  @@index([flatMapId])
+}
+
+model Doorway {
+  id         String @id @default(uuid())
+  fromRoomId String
+  toRoomId   String
+  
+  // Position within the "from" room
+  positionX Float
+  positionY Float
+  
+  // Compass heading when walking through (from → to)
+  compassHeading Float
+  
+  type String @default("door") // door, archway, opening
+  
+  // Distance in steps to traverse
+  distanceSteps Int @default(2)
+
+  fromRoom Room @relation("FromRoom", fields: [fromRoomId], references: [id], onDelete: Cascade)
+  toRoom   Room @relation("ToRoom", fields: [toRoomId], references: [id], onDelete: Cascade)
+
+  @@index([fromRoomId])
+  @@index([toRoomId])
+}
+
+model Landmark {
+  id          String @id @default(uuid())
+  roomId      String
+  name        String  // "bed", "refrigerator", "window"
+  description String? // "Queen bed against north wall"
+  
+  // Position within room
+  positionX Float
+  positionY Float
+  
+  // Compass direction from room center
+  compassDirection Float?
+
+  room Room @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  @@index([roomId])
+}
+
+model ReferenceImage {
+  id        String   @id @default(uuid())
+  roomId    String
+  
+  locationTag    String  // "entrance_view", "facing_window", "at_door"
+  compassHeading Float   // Direction camera was facing
+  
+  // Image storage - base64 or URL
+  imageData String  // base64 encoded image
+  
+  // Gemini-generated during setup
+  description       String?
+  detectedLandmarks String? // JSON array of strings
+  
+  capturedAt DateTime @default(now())
+
+  room Room @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  @@index([roomId])
+}
+
+model NavigationSession {
+  id        String   @id @default(uuid())
+  userId    String
+  flatMapId String
+  
+  status String @default("initializing")
+  // initializing, confirming_start, navigating, awaiting_visual,
+  // recalculating, paused, completed, cancelled, failed
+  
+  // Destination
+  destinationRoomId String
+  
+  // Path as JSON (array of PathSegment)
+  pathJson String
+  currentSegmentIndex Int @default(0)
+  
+  // Current position tracking
+  currentRoomId       String
+  estimatedPositionX  Float
+  estimatedPositionY  Float
+  currentCompassHeading Float
+  confidence          Float @default(1.0)
+  
+  // Segment progress
+  stepsTakenInSegment  Int @default(0)
+  totalStepsInSegment  Int @default(0)
+  
+  // Checkpoints triggered (JSON array of checkpoint IDs)
+  triggeredCheckpoints String @default("[]")
+  
+  // Visual confirmation tracking
+  lastVisualConfirmAt   DateTime?
+  lastConfirmedRoomId   String?
+  pendingVisualRequest  Boolean @default(false)
+  
+  // Timestamps
+  startedAt   DateTime  @default(now())
+  lastUpdateAt DateTime @default(now())
+  completedAt DateTime?
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  flatMap FlatMap @relation(fields: [flatMapId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([flatMapId])
+  @@index([status])
+}
