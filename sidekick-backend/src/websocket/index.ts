@@ -59,14 +59,12 @@ export async function registerWebSocket(
 
               console.log(`[WS] Client connected: userId=${decoded.userId}, clientId=${clientId}`);
 
-              // Send connection established message
+              // Send connection confirmation (matching mobile app expectations)
               connection.send(
                 JSON.stringify({
-                  type: 'connection_established',
-                  payload: {
-                    userId: decoded.userId,
-                    clientId: clientId,
-                  },
+                  type: 'connected',
+                  clientId: clientId,
+                  timestamp: Date.now(),
                 })
               );
             } catch (jwtError: any) {

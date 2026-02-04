@@ -24,6 +24,7 @@ import authRoutes from './api/auth';
 import flatRoutes from './api/flats';
 import roomRoutes from './api/rooms';
 import imageRoutes from './api/images';
+import navigateRoutes from './api/navigate';
 // import { registerWebSocketRoutes } from './websocket/handlers';
 
 /**
@@ -100,12 +101,24 @@ async function registerPlugins() {
  */
 function initializeServices() {
   console.log('[Server] Initializing services...');
+  console.log('[Server] VISION_API_URL:', config.VISION_API_URL ? 'Set' : 'Not set');
 
   const directionTranslator = new DirectionTranslator();
   const positionTracker = new PositionTracker();
   const pathFinder = new PathFinder();
   const triggerEvaluator = new TriggerEvaluator();
-  const visionClient = new VisionClient(config.VISION_API_URL);
+  
+  let visionClient: VisionClient;
+  try {
+    visionClient = new VisionClient(config.VISION_API_URL || undefined);
+    console.log('[Server] VisionClient initialized');
+  } catch (error) {
+    console.warn('[Server] VisionClient initialization failed:', (error as Error).message);
+    console.warn('[Server] Vision features will be disabled. Set VISION_API_URL to enable.');
+    // Create a dummy client that will fail gracefully
+    throw error; // For now, we'll throw - user needs to set VISION_API_URL
+  }
+  
   const speechGenerator = new SpeechGenerator();
   const navigationEngine = new NavigationEngine(
     prisma,
@@ -134,7 +147,13 @@ function initializeServices() {
 /**
  * Register REST API routes
  */
-async function registerRoutes(_services: ReturnType<typeof initializeServices>) {
+async function registerRoutes(services: ReturnType<typeof initializeServices>) {
+  // Attach services to fastify instance so plugins can access them
+  (fastify as any).navigationEngine = services.navigationEngine;
+  (fastify as any).visionClient = services.visionClient;
+  (fastify as any).directionTranslator = services.directionTranslator;
+  (fastify as any).prisma = prisma;
+
   // Health check endpoint
   fastify.get('/health', async () => {
     return {
@@ -154,19 +173,21 @@ async function registerRoutes(_services: ReturnType<typeof initializeServices>) 
   await fastify.register(imageRoutes, {
     prefix: `${apiPrefix}/flats/:flatId/rooms/:roomId/images`,
   });
-
+  await fastify.register(navigateRoutes, { prefix: `${apiPrefix}/navigate` });
   console.log('[Server] Routes registered');
 }
 
 /**
  * Register WebSocket routes
  */
-async function registerWebSocket(_services: ReturnType<typeof initializeServices>) {
-  // TODO: Register WebSocket handler when implemented
-  // await fastify.register(registerWebSocketRoutes, {
-  //   prefix: '/ws',
-  //   services,
-  // });
+async function registerWebSocket(services: ReturnType<typeof initializeServices>) {
+  const { registerWebSocket: registerWS } = await import('./websocket/index');
+  
+  await registerWS(fastify, {
+    navigationEngine: services.navigationEngine,
+    sessionManager: services.sessionManager,
+    fastify: fastify,
+  });
 
   console.log('[Server] WebSocket routes registered');
 }

@@ -32,13 +32,28 @@ interface VisionClient {
 }
 
 /**
+ * Step batch with heading information
+ */
+export interface StepBatch {
+  steps: number;      // Number of steps in this batch
+  heading: number;    // Compass heading (0-360) when steps were taken
+  timestamp: number;  // When this batch was recorded
+}
+
+/**
  * Sensor update payload from mobile client
  */
 export interface SensorUpdatePayload {
-  stepsSinceLastUpdate: number;
-  totalStepsInSegment: number;
-  compassHeading: number;
-  isMoving: boolean;
+  // Legacy fields (for backward compatibility)
+  stepsSinceLastUpdate?: number;
+  totalStepsInSegment?: number;
+  compassHeading?: number;
+  
+  // New batch-based fields
+  currentHeading: number;       // Current compass heading
+  stepBatches?: StepBatch[];     // Array of step batches with headings
+  isMoving: boolean;            // Is user currently moving
+  timestamp: number;            // Message timestamp
 }
 
 /**
@@ -63,6 +78,11 @@ export type ServerMessage =
       };
     }
   | {
+      type: 'connected';
+      clientId: string;
+      timestamp: number;
+    }
+  | {
       type: 'navigation_started';
       sessionId: string;
       path: PathSegment[];
@@ -78,6 +98,13 @@ export type ServerMessage =
       stepsRemaining: number;
       nextAction?: string;
       confidence: number;
+      // Outdoor navigation fields
+      text?: string;
+      distance?: number;
+      maneuver?: string;
+      targetBearing?: number;
+      stepIndex?: number;
+      totalSteps?: number;
     }
   | {
       type: 'request_visual';
@@ -95,6 +122,38 @@ export type ServerMessage =
       type: 'position_update';
       confidence: number;
       currentRoom: string;
+    }
+  | {
+      type: 'position_ack';
+      timestamp: number;
+    }
+  | {
+      type: 'route_update';
+      totalDistance: number; // meters
+      estimatedTime: number; // seconds
+      steps: Array<{
+        instruction: string;
+        distance: number;
+        maneuver: string;
+        bearing: number;
+      }>;
+    }
+  | {
+      type: 'hazard_warning';
+      hazardType: string; // 'obstacle', 'construction', 'traffic', etc.
+      severity: 'low' | 'medium' | 'high';
+      distance: number;
+      description: string;
+      timestamp: number;
+    }
+  | {
+      type: 'arrival';
+      message: string;
+      timestamp: number;
+    }
+  | {
+      type: 'pong';
+      timestamp: number;
     }
   | {
       type: 'recalculating';
@@ -360,16 +419,49 @@ export class NavigationEngine {
 
     const messages: ServerMessage[] = [];
 
-    // Update position using dead reckoning
-    session.estimatedPosition = this.positionTracker.updatePosition(
-      session.estimatedPosition,
-      payload.stepsSinceLastUpdate,
-      payload.compassHeading
-    );
+    // Store previous position for progress checking
+    const previousPosition = { ...session.estimatedPosition };
+
+    // Process step batches if provided (new format), otherwise use legacy format
+    let currentHeading = payload.currentHeading || payload.compassHeading || session.currentCompassHeading;
+
+    if (payload.stepBatches && payload.stepBatches.length > 0) {
+      // New batch-based processing
+      const result = this.positionTracker.processStepBatches(
+        session.estimatedPosition,
+        payload.stepBatches
+      );
+
+      session.estimatedPosition = { x: result.x, y: result.y };
+
+      // Log for debugging
+      const net = this.positionTracker.getNetDisplacement(payload.stepBatches);
+      console.log(
+        `[NavigationEngine] User ${session.userId}: +${result.totalSteps} steps, ` +
+        `net displacement: ${net.distance.toFixed(1)} steps, ` +
+        `position: (${result.x.toFixed(1)}, ${result.y.toFixed(1)})`
+      );
+
+      // Update steps taken in segment
+      session.stepsTakenInSegment += result.totalSteps;
+    } else if (payload.stepsSinceLastUpdate !== undefined) {
+      // Legacy format - single step update
+      session.estimatedPosition = this.positionTracker.updatePosition(
+        session.estimatedPosition,
+        payload.stepsSinceLastUpdate,
+        payload.compassHeading || currentHeading
+      );
+      
+      // Update steps taken in segment
+      if (payload.totalStepsInSegment !== undefined) {
+        session.stepsTakenInSegment = payload.totalStepsInSegment;
+      } else {
+        session.stepsTakenInSegment += payload.stepsSinceLastUpdate;
+      }
+    }
 
     // Update session state
-    session.stepsTakenInSegment = payload.totalStepsInSegment;
-    session.currentCompassHeading = payload.compassHeading;
+    session.currentCompassHeading = currentHeading;
     session.lastUpdateAt = new Date();
 
     // Calculate confidence decay
@@ -384,6 +476,13 @@ export class NavigationEngine {
       secondsSinceConfirm
     );
 
+    // Check progress toward destination
+    const progressStatus = this.checkProgress(session, previousPosition);
+    if (progressStatus === 'wrong_way') {
+      console.log(`[NavigationEngine] Warning: User may be going wrong way`);
+      // Could send a warning message here if needed
+    }
+
     // Check if segment is complete
     if (session.stepsTakenInSegment >= session.totalStepsInSegment) {
       console.log(
@@ -394,7 +493,7 @@ export class NavigationEngine {
     }
 
     // Check for checkpoint instructions
-    const checkpointMessage = this.checkCheckpoints(session, payload.compassHeading);
+    const checkpointMessage = this.checkCheckpoints(session, currentHeading);
     if (checkpointMessage) {
       messages.push(checkpointMessage);
     }
@@ -413,7 +512,7 @@ export class NavigationEngine {
       );
     } else {
       // Generate current instruction if no visual needed
-      const instruction = this.generateCurrentInstruction(session, payload.compassHeading);
+      const instruction = this.generateCurrentInstruction(session, currentHeading);
       if (instruction) {
         const currentSegment = session.path[session.currentSegmentIndex];
         const stepsRemaining = Math.max(0, currentSegment.distanceSteps - session.stepsTakenInSegment);
@@ -442,6 +541,62 @@ export class NavigationEngine {
     await this.persistSession(session);
 
     return messages;
+  }
+
+  /**
+   * Check if user is making progress or going wrong way
+   * 
+   * @param session - Current navigation session
+   * @param previousPosition - Position before last update
+   * @returns 'on_track' | 'wrong_way' | 'stationary'
+   */
+  private checkProgress(
+    session: NavigationSessionRuntime,
+    previousPosition: { x: number; y: number }
+  ): 'on_track' | 'wrong_way' | 'stationary' {
+    const currentSegment = session.path[session.currentSegmentIndex];
+    if (!currentSegment) {
+      return 'on_track'; // No route step to compare
+    }
+
+    // Calculate target position for current segment
+    // For indoor navigation, we use the target room's position
+    // This is a simplified check - in practice, you'd get the target room position
+    // For now, we'll check if we're moving in the general direction of the segment heading
+    
+    // Get the expected direction from the segment
+    const expectedHeading = currentSegment.compassHeading;
+    const currentHeading = session.currentCompassHeading;
+    
+    // Calculate heading difference (0-180 degrees)
+    let headingDiff = Math.abs(currentHeading - expectedHeading);
+    if (headingDiff > 180) {
+      headingDiff = 360 - headingDiff;
+    }
+
+    // If heading is more than 90 degrees off, might be going wrong way
+    if (headingDiff > 90) {
+      // Check displacement toward a theoretical target
+      // For simplicity, assume target is 100 steps ahead in the expected direction
+      const targetRadians = ((90 - expectedHeading) * Math.PI) / 180;
+      const targetPosition = {
+        x: session.estimatedPosition.x + 100 * Math.cos(targetRadians),
+        y: session.estimatedPosition.y + 100 * Math.sin(targetRadians),
+      };
+
+      const displacement = this.positionTracker.calculateDisplacementTowardTarget(
+        previousPosition,
+        session.estimatedPosition,
+        targetPosition
+      );
+
+      // If we've moved more than 3 steps in wrong direction, warn
+      if (displacement < -3) {
+        return 'wrong_way';
+      }
+    }
+
+    return 'on_track';
   }
 
   /**
@@ -727,6 +882,68 @@ export class NavigationEngine {
    */
   getSession(sessionId: string): NavigationSessionRuntime | null {
     return this.sessions.get(sessionId) || null;
+  }
+
+  /**
+   * Gets a session from memory, or loads it from database if not in memory
+   * 
+   * @param sessionId - Session ID
+   * @returns Session object or null if not found
+   */
+  async getSessionOrLoadFromDb(sessionId: string): Promise<NavigationSessionRuntime | null> {
+    // First check memory
+    const memorySession = this.sessions.get(sessionId);
+    if (memorySession) {
+      return memorySession;
+    }
+
+    // Load from database
+    try {
+      const dbSession = await this.prisma.navigationSession.findUnique({
+        where: { id: sessionId },
+      });
+
+      if (!dbSession) {
+        return null;
+      }
+
+      // Convert database session to runtime format
+      const path: PathSegment[] = JSON.parse(dbSession.pathJson || '[]');
+      const triggeredCheckpoints: string[] = JSON.parse(dbSession.triggeredCheckpoints || '[]');
+
+      const session: NavigationSessionRuntime = {
+        id: dbSession.id,
+        userId: dbSession.userId,
+        flatMapId: dbSession.flatMapId,
+        status: dbSession.status as any,
+        destinationRoomId: dbSession.destinationRoomId,
+        path,
+        currentSegmentIndex: dbSession.currentSegmentIndex,
+        currentRoomId: dbSession.currentRoomId,
+        estimatedPosition: {
+          x: dbSession.estimatedPositionX,
+          y: dbSession.estimatedPositionY,
+        },
+        currentCompassHeading: dbSession.currentCompassHeading,
+        confidence: dbSession.confidence,
+        stepsTakenInSegment: dbSession.stepsTakenInSegment,
+        totalStepsInSegment: dbSession.totalStepsInSegment,
+        triggeredCheckpoints,
+        lastVisualConfirmAt: dbSession.lastVisualConfirmAt,
+        lastConfirmedRoomId: dbSession.lastConfirmedRoomId || null,
+        pendingVisualRequest: dbSession.pendingVisualRequest,
+        startedAt: dbSession.startedAt,
+        lastUpdateAt: dbSession.lastUpdateAt,
+      };
+
+      // Store in memory for future access
+      this.sessions.set(session.id, session);
+
+      return session;
+    } catch (error) {
+      console.error(`[NavigationEngine] Error loading session ${sessionId} from database:`, error);
+      return null;
+    }
   }
 
   /**

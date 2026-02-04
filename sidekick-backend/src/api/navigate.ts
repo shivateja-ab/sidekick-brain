@@ -7,7 +7,7 @@ import type { VisualTrigger } from '../services/TriggerEvaluator';
  * User type for authenticated requests
  */
 interface AuthenticatedUser {
-  id: string;
+  userId: string;
   email: string;
 }
 
@@ -17,7 +17,7 @@ interface AuthenticatedUser {
  */
 function getAuthenticatedUser(request: FastifyRequest): AuthenticatedUser | null {
   const user = (request as any).user;
-  if (user && typeof user === 'object' && 'id' in user && 'email' in user) {
+  if (user && typeof user === 'object' && 'userId' in user && 'email' in user) {
     return user as AuthenticatedUser;
   }
   return null;
@@ -222,7 +222,7 @@ export default async function navigateRoutes(fastify: FastifyInstance) {
       try {
         // Start navigation
         const { session, messages } = await navigationEngine.startNavigation(
-          authUser.id,
+          authUser.userId,
           flatMapId,
           destinationRoomId,
           currentRoomId,
@@ -297,7 +297,7 @@ export default async function navigateRoutes(fastify: FastifyInstance) {
 
       try {
         // Verify session ownership
-        await verifySessionOwnership(sessionId, authUser.id);
+        await verifySessionOwnership(sessionId, authUser.userId);
 
         // Process sensor update
         const messages = await navigationEngine.processSensorUpdate(sessionId, payload);
@@ -384,7 +384,7 @@ export default async function navigateRoutes(fastify: FastifyInstance) {
 
       try {
         // Verify session ownership
-        await verifySessionOwnership(sessionId, authUser.id);
+        await verifySessionOwnership(sessionId, authUser.userId);
 
         // Process visual response
         const messages = await navigationEngine.processVisualResponse(sessionId, payload);
@@ -446,10 +446,10 @@ export default async function navigateRoutes(fastify: FastifyInstance) {
 
       try {
         // Verify session ownership
-        await verifySessionOwnership(sessionId, authUser.id);
+        await verifySessionOwnership(sessionId, authUser.userId);
 
-        // Get session
-        const session = navigationEngine.getSession(sessionId);
+        // Get session from memory or load from database
+        const session = await navigationEngine.getSessionOrLoadFromDb(sessionId);
         if (!session) {
           return reply.code(404).send({
             error: 'not_found',
@@ -528,7 +528,7 @@ export default async function navigateRoutes(fastify: FastifyInstance) {
 
       try {
         // Verify session ownership
-        await verifySessionOwnership(sessionId, authUser.id);
+        await verifySessionOwnership(sessionId, authUser.userId);
 
         // Cancel navigation
         const messages = await navigationEngine.cancelNavigation(sessionId);
@@ -578,7 +578,7 @@ export default async function navigateRoutes(fastify: FastifyInstance) {
 
       try {
         // Verify session ownership
-        await verifySessionOwnership(sessionId, authUser.id);
+        await verifySessionOwnership(sessionId, authUser.userId);
 
         // Pause navigation
         const messages = await navigationEngine.pauseNavigation(sessionId);
@@ -628,7 +628,7 @@ export default async function navigateRoutes(fastify: FastifyInstance) {
 
       try {
         // Verify session ownership
-        await verifySessionOwnership(sessionId, authUser.id);
+        await verifySessionOwnership(sessionId, authUser.userId);
 
         // Resume navigation
         const messages = await navigationEngine.resumeNavigation(sessionId);

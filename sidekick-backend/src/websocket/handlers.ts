@@ -60,13 +60,19 @@ export async function handleStartNavigation(
   services: WebSocketServices
 ): Promise<ServerMessage[]> {
   try {
-    const { flatMapId, destinationRoomId, currentRoomId, currentHeading } = payload;
+    const { flatMapId, destinationRoomId, currentRoomId, currentHeading, destination, currentPosition } = payload;
 
+    // Check if this is outdoor navigation (GPS-based)
+    if (destination && currentPosition) {
+      return handleOutdoorNavigation(client, { destination, currentPosition }, services);
+    }
+
+    // Indoor navigation (existing logic)
     if (!flatMapId || !destinationRoomId) {
       return [
         createErrorMessage(
           'validation_error',
-          'flatMapId and destinationRoomId are required',
+          'flatMapId and destinationRoomId are required for indoor navigation, or destination and currentPosition for outdoor navigation',
           true
         ),
       ];
@@ -100,6 +106,101 @@ export async function handleStartNavigation(
       ),
     ];
   }
+}
+
+/**
+ * Track outdoor navigation sessions (simple in-memory store)
+ */
+const outdoorNavigationSessions = new Map<string, {
+  userId: string;
+  destination: string;
+  startTime: Date;
+  currentPosition: { lat: number; lng: number } | null;
+  heading: number | null;
+}>();
+
+/**
+ * Handle outdoor navigation (GPS-based)
+ */
+async function handleOutdoorNavigation(
+  client: ConnectedClient,
+  payload: { destination: string; currentPosition: { lat: number; lng: number } },
+  services: WebSocketServices
+): Promise<ServerMessage[]> {
+  const { destination, currentPosition } = payload;
+  const sessionManager = services.sessionManager as SessionManager;
+  
+  console.log(`[WS] Starting outdoor navigation for ${client.userId} to ${destination}`);
+  
+  // Create a session ID for outdoor navigation
+  const sessionId = `outdoor_${Date.now()}_${client.id}`;
+  sessionManager.setActiveSession(client.id, sessionId);
+  
+  // Store outdoor navigation session
+  outdoorNavigationSessions.set(sessionId, {
+    userId: client.userId,
+    destination,
+    startTime: new Date(),
+    currentPosition,
+    heading: null,
+  });
+  
+  // TODO: Call routing API (Google Directions, OSRM, etc.) to get route
+  // For now, send mock route data
+  const mockRoute: ServerMessage = {
+    type: 'route_update',
+    totalDistance: 1250, // meters
+    estimatedTime: 900, // seconds (15 min)
+    steps: [
+      {
+        instruction: 'Head north on Main Street',
+        distance: 200,
+        maneuver: 'straight',
+        bearing: 0,
+      },
+      {
+        instruction: 'Turn right onto Oak Avenue',
+        distance: 350,
+        maneuver: 'turn-right',
+        bearing: 90,
+      },
+      {
+        instruction: 'Continue straight for 400 meters',
+        distance: 400,
+        maneuver: 'straight',
+        bearing: 90,
+      },
+      {
+        instruction: 'Turn left onto Pine Road',
+        distance: 200,
+        maneuver: 'turn-left',
+        bearing: 0,
+      },
+      {
+        instruction: 'Your destination is on the right',
+        distance: 100,
+        maneuver: 'arrive',
+        bearing: 0,
+      },
+    ],
+  };
+  
+  const firstInstruction: ServerMessage = {
+    type: 'instruction',
+    text: mockRoute.steps[0].instruction,
+    speech: mockRoute.steps[0].instruction,
+    distance: mockRoute.steps[0].distance,
+    maneuver: mockRoute.steps[0].maneuver,
+    targetBearing: mockRoute.steps[0].bearing,
+    stepIndex: 0,
+    totalSteps: mockRoute.steps.length,
+    priority: 'normal',
+    currentSegmentIndex: 0,
+    stepsRemaining: mockRoute.totalDistance,
+    confidence: 1.0,
+  };
+  
+  return [mockRoute, firstInstruction];
 }
 
 /**
@@ -387,18 +488,28 @@ export async function handleCancel(
     const navigationEngine = services.navigationEngine as NavigationEngine;
     const sessionManager = services.sessionManager as SessionManager;
 
-    if (!client.sessionId) {
-      return [
-        createErrorMessage('no_active_session', 'No active navigation session', true),
-      ];
+    // Check if this is an indoor navigation session
+    if (client.sessionId) {
+      const messages = await navigationEngine.cancelNavigation(client.sessionId);
+      // Clear active session
+      sessionManager.clearActiveSession(client.id);
+      return messages;
     }
 
-    const messages = await navigationEngine.cancelNavigation(client.sessionId);
-
-    // Clear active session
+    // Outdoor navigation - clear session and send confirmation
+    if (client.sessionId && client.sessionId.startsWith('outdoor_')) {
+      outdoorNavigationSessions.delete(client.sessionId);
+    }
     sessionManager.clearActiveSession(client.id);
-
-    return messages;
+    
+    console.log(`[WS] Outdoor navigation cancelled for ${client.userId}`);
+    
+    return [
+      {
+        type: 'navigation_cancelled',
+        speech: 'Navigation cancelled',
+      },
+    ];
   } catch (error: any) {
     console.error('[WS] Cancel error:', error);
     return [
@@ -487,9 +598,8 @@ export async function handlePing(
 
   return [
     {
-      type: 'position_update',
-      confidence: 1.0,
-      currentRoom: '',
+      type: 'pong',
+      timestamp: Date.now(),
     },
   ];
 }
@@ -536,6 +646,12 @@ export async function handleMessage(
       case 'ping':
         return handlePing(client, message.payload || {}, services);
 
+      case 'position_report':
+        return handlePositionReport(client, message.payload, services);
+
+      case 'heading_report':
+        return handleHeadingReport(client, message.payload, services);
+
       default:
         return [
           createErrorMessage(
@@ -569,4 +685,76 @@ export function sendMessageToClient(socket: any, message: ServerMessage): void {
  */
 export function sendMessagesToClient(socket: any, messages: ServerMessage[]): void {
   sendMessages(socket, messages);
+}
+
+/**
+ * Handle position report (outdoor navigation)
+ */
+export async function handlePositionReport(
+  client: ConnectedClient,
+  payload: Extract<ClientMessage, { type: 'position_report' }>['payload'],
+  services: WebSocketServices
+): Promise<ServerMessage[]> {
+  try {
+    const { position, accuracy, timestamp } = payload;
+    
+    console.log(`[WS] Position report from ${client.id}: lat=${position.lat}, lng=${position.lng}, accuracy=${accuracy}m`);
+    
+    // Update outdoor navigation session if exists
+    if (client.sessionId && client.sessionId.startsWith('outdoor_')) {
+      const session = outdoorNavigationSessions.get(client.sessionId);
+      if (session) {
+        session.currentPosition = position;
+      }
+    }
+    
+    // TODO: Calculate distance to next maneuver
+    // TODO: Check if user has deviated from route
+    // TODO: Send updated instruction if approaching turn
+    
+    // For now, just acknowledge the position
+    return [
+      {
+        type: 'position_ack',
+        timestamp: Date.now(),
+      },
+    ];
+  } catch (error: any) {
+    console.error('[WS] Position report error:', error);
+    return [
+      createErrorMessage('position_error', error.message || 'Failed to process position report', true),
+    ];
+  }
+}
+
+/**
+ * Handle heading report (outdoor navigation)
+ */
+export async function handleHeadingReport(
+  client: ConnectedClient,
+  payload: Extract<ClientMessage, { type: 'heading_report' }>['payload'],
+  services: WebSocketServices
+): Promise<ServerMessage[]> {
+  try {
+    const { heading, timestamp } = payload;
+    
+    // Update outdoor navigation session if exists
+    if (client.sessionId && client.sessionId.startsWith('outdoor_')) {
+      const session = outdoorNavigationSessions.get(client.sessionId);
+      if (session) {
+        session.heading = heading;
+      }
+    }
+    
+    // The mobile app uses heading + targetBearing to show direction arrow
+    // No response needed for heading updates, just log it
+    console.log(`[WS] Heading report from ${client.id}: ${heading}°`);
+    
+    // Return empty array - no response needed
+    return [];
+  } catch (error: any) {
+    console.error('[WS] Heading report error:', error);
+    // Don't send error for heading reports - they're fire-and-forget
+    return [];
+  }
 }

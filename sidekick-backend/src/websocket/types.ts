@@ -8,10 +8,14 @@ export type ClientMessage =
   | {
       type: 'start_navigation';
       payload: {
-        flatMapId: string;
-        destinationRoomId: string;
+        // Indoor navigation
+        flatMapId?: string;
+        destinationRoomId?: string;
         currentRoomId?: string;
         currentHeading?: number;
+        // Outdoor navigation
+        destination?: string;
+        currentPosition?: { lat: number; lng: number };
       };
     }
   | {
@@ -53,6 +57,21 @@ export type ClientMessage =
   | {
       type: 'ping';
       payload?: Record<string, never>;
+    }
+  | {
+      type: 'position_report';
+      payload: {
+        position: { lat: number; lng: number };
+        accuracy: number;
+        timestamp: number;
+      };
+    }
+  | {
+      type: 'heading_report';
+      payload: {
+        heading: number; // 0-360 degrees
+        timestamp: number;
+      };
     };
 
 /**

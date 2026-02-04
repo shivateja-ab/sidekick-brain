@@ -253,4 +253,109 @@ export class PositionTracker {
   getMaxConfidence(): number {
     return this.MAX_CONFIDENCE;
   }
+
+  /**
+   * Process multiple step batches, each with its own heading.
+   * This handles the case where user changes direction while walking.
+   * 
+   * @param currentPosition - Starting position {x, y}
+   * @param stepBatches - Array of {steps, heading, timestamp}
+   * @returns New position after processing all batches
+   * 
+   * @example
+   * // Walk 10 steps East, then 5 steps West
+   * processStepBatches({x: 0, y: 0}, [
+   *   {steps: 10, heading: 90, timestamp: 1000},  // East
+   *   {steps: 5, heading: 270, timestamp: 2000},   // West
+   * ])
+   * // Returns: {x: 5, y: 0, totalSteps: 15} - net 5 steps East
+   */
+  processStepBatches(
+    currentPosition: { x: number; y: number },
+    stepBatches: Array<{ steps: number; heading: number; timestamp: number }>
+  ): { x: number; y: number; totalSteps: number } {
+    let position = { ...currentPosition };
+    let totalSteps = 0;
+
+    for (const batch of stepBatches) {
+      if (batch.steps <= 0) continue;
+      
+      // Use existing updatePosition for each batch
+      position = this.updatePosition(position, batch.steps, batch.heading);
+      totalSteps += batch.steps;
+    }
+
+    return {
+      x: position.x,
+      y: position.y,
+      totalSteps
+    };
+  }
+
+  /**
+   * Calculate how much closer (or farther) user moved toward a target.
+   * Positive = moved toward target, Negative = moved away
+   * 
+   * @param oldPosition - Previous position {x, y}
+   * @param newPosition - Current position {x, y}
+   * @param targetPosition - Target position {x, y}
+   * @returns Displacement in step units (positive if closer, negative if farther)
+   * 
+   * @example
+   * // Start at (0, 0), move to (5, 0), target at (10, 0)
+   * calculateDisplacementTowardTarget({x: 0, y: 0}, {x: 5, y: 0}, {x: 10, y: 0})
+   * // Returns: 5 (moved 5 steps closer)
+   * 
+   * @example
+   * // Start at (5, 0), move to (0, 0), target at (10, 0)
+   * calculateDisplacementTowardTarget({x: 5, y: 0}, {x: 0, y: 0}, {x: 10, y: 0})
+   * // Returns: -5 (moved 5 steps away)
+   */
+  calculateDisplacementTowardTarget(
+    oldPosition: { x: number; y: number },
+    newPosition: { x: number; y: number },
+    targetPosition: { x: number; y: number }
+  ): number {
+    const oldDistance = this.estimateDistanceBetween(oldPosition, targetPosition);
+    const newDistance = this.estimateDistanceBetween(newPosition, targetPosition);
+    
+    return oldDistance - newDistance; // Positive if got closer
+  }
+
+  /**
+   * Get the net displacement from step batches (useful for debugging).
+   * Returns the straight-line distance from start to end, regardless of path taken.
+   * 
+   * @param stepBatches - Array of step batches
+   * @returns Net displacement {dx, dy, distance}
+   * 
+   * @example
+   * // Walk 10 steps East, then 5 steps West
+   * getNetDisplacement([
+   *   {steps: 10, heading: 90, timestamp: 1000},  // East
+   *   {steps: 5, heading: 270, timestamp: 2000},  // West
+   * ])
+   * // Returns: {dx: 5, dy: 0, distance: 5} - net 5 steps East
+   */
+  getNetDisplacement(
+    stepBatches: Array<{ steps: number; heading: number; timestamp: number }>
+  ): { dx: number; dy: number; distance: number } {
+    let dx = 0;
+    let dy = 0;
+
+    for (const batch of stepBatches) {
+      if (batch.steps <= 0) continue;
+      
+      // Convert compass heading to radians
+      const radians = ((90 - batch.heading) * Math.PI) / 180;
+      dx += batch.steps * Math.cos(radians);
+      dy += batch.steps * Math.sin(radians);
+    }
+
+    return {
+      dx,
+      dy,
+      distance: Math.sqrt(dx * dx + dy * dy)
+    };
+  }
 }
