@@ -1,4 +1,4 @@
-import type { DirectionTranslator } from './DirectionTranslator';
+// import type { DirectionTranslator } from './DirectionTranslator';
 
 /**
  * Speech generation options
@@ -41,7 +41,7 @@ export class SpeechGenerator {
     'Nice work',
     'Great job',
   ];
-  private readonly transitions = ['Now', 'Next', 'Then', 'After that'];
+//   private readonly transitions = ['Now', 'Next', 'Then', 'After that'];
   private readonly arrivalPhrases = [
     "You've arrived at",
     "You're here. This is",
@@ -49,7 +49,7 @@ export class SpeechGenerator {
   ];
 
   constructor(
-    private directionTranslator: DirectionTranslator,
+    // private directionTranslator: DirectionTranslator,
     defaultOptions?: Partial<SpeechOptions>
   ) {
     this.options = {

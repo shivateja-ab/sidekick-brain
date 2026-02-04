@@ -25,10 +25,12 @@
   "license": "ISC",
   "dependencies": {
     "@fastify/cors": "^8.4.0",
+    "@fastify/env": "^5.0.3",
     "@fastify/jwt": "^7.2.4",
     "@fastify/websocket": "^10.0.0",
     "@prisma/client": "^5.7.0",
     "bcryptjs": "^2.4.3",
+    "dotenv": "^17.2.3",
     "fastify": "^4.24.3",
     "jsonwebtoken": "^9.0.2"
   },

@@ -1,5 +1,6 @@
 import type { ConnectedClient } from './SessionManager';
-import type { ClientMessage, ServerMessage, WebSocketServices } from './types';
+import type { ClientMessage, WebSocketServices } from './types';
+import { ServerMessage } from '../services/NavigationEngine';
 import type { NavigationEngine } from '../services/NavigationEngine';
 import type { SessionManager } from './SessionManager';
 import type { TriggerEvaluator } from '../services/TriggerEvaluator';
@@ -111,7 +112,7 @@ export async function handleSensorUpdate(
 ): Promise<ServerMessage[]> {
   try {
     const navigationEngine = services.navigationEngine as NavigationEngine;
-    const sessionManager = services.sessionManager as SessionManager;
+    // const sessionManager = services.sessionManager as SessionManager;
 
     if (!client.sessionId) {
       return [
@@ -169,7 +170,7 @@ export async function handleVisualResponse(
  */
 export async function handleVisualSkipped(
   client: ConnectedClient,
-  payload: Extract<ClientMessage, { type: 'visual_skipped' }>['payload'],
+  _payload: Extract<ClientMessage, { type: 'visual_skipped' }>['payload'],
   services: WebSocketServices
 ): Promise<ServerMessage[]> {
   try {
@@ -229,7 +230,7 @@ export async function handleVoiceCommand(
     const lowerCommand = command.toLowerCase().trim();
 
     const navigationEngine = services.navigationEngine as NavigationEngine;
-    const sessionManager = services.sessionManager as SessionManager;
+    // const sessionManager = services.sessionManager as SessionManager;
     const triggerEvaluator = (services as any).triggerEvaluator as TriggerEvaluator;
 
     // Map common phrases to actions

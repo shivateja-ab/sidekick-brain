@@ -3,7 +3,11 @@ import cors from '@fastify/cors';
 import jwt from '@fastify/jwt';
 import websocket from '@fastify/websocket';
 import { config } from './config';
+import dotenv from 'dotenv';
+dotenv.config();
 import { prisma, disconnectPrisma } from './db/client';
+
+
 
 // Import services
 import { DirectionTranslator } from './services/DirectionTranslator';
@@ -20,8 +24,7 @@ import authRoutes from './api/auth';
 import flatRoutes from './api/flats';
 import roomRoutes from './api/rooms';
 import imageRoutes from './api/images';
-import navigateRoutes from './api/navigate';
-import { registerWebSocket } from './websocket/index';
+// import { registerWebSocketRoutes } from './websocket/handlers';
 
 /**
  * Create Fastify instance with logger
@@ -57,11 +60,11 @@ async function setupAuthentication() {
       }
 
       const token = authHeader.substring(7);
-      const decoded = (fastify as any).jwt.verify(token) as { id: string; email: string };
-
+      const decoded = (fastify as any).jwt.verify(token) as { userId: string; email: string };
+      console.log('Decoded JWT:', decoded);
       // Attach user to request
       request.user = {
-        id: decoded.id,
+        userId: decoded.userId,
         email: decoded.email,
       };
     } catch (error) {
@@ -103,7 +106,7 @@ function initializeServices() {
   const pathFinder = new PathFinder();
   const triggerEvaluator = new TriggerEvaluator();
   const visionClient = new VisionClient(config.VISION_API_URL);
-  const speechGenerator = new SpeechGenerator(directionTranslator);
+  const speechGenerator = new SpeechGenerator();
   const navigationEngine = new NavigationEngine(
     prisma,
     pathFinder,
@@ -151,7 +154,6 @@ async function registerRoutes(_services: ReturnType<typeof initializeServices>) 
   await fastify.register(imageRoutes, {
     prefix: `${apiPrefix}/flats/:flatId/rooms/:roomId/images`,
   });
-  await fastify.register(navigateRoutes, { prefix: `${apiPrefix}/navigate` });
 
   console.log('[Server] Routes registered');
 }
@@ -159,14 +161,14 @@ async function registerRoutes(_services: ReturnType<typeof initializeServices>) 
 /**
  * Register WebSocket routes
  */
-async function registerWebSocketRoutes(services: ReturnType<typeof initializeServices>) {
-  await registerWebSocket(fastify, {
-    navigationEngine: services.navigationEngine,
-    sessionManager: services.sessionManager,
-    fastify: fastify,
-    directionTranslator: services.directionTranslator,
-    triggerEvaluator: services.triggerEvaluator,
-  } as any);
+async function registerWebSocket(_services: ReturnType<typeof initializeServices>) {
+  // TODO: Register WebSocket handler when implemented
+  // await fastify.register(registerWebSocketRoutes, {
+  //   prefix: '/ws',
+  //   services,
+  // });
+
+  console.log('[Server] WebSocket routes registered');
 }
 
 /**
@@ -184,16 +186,11 @@ async function start() {
     // Initialize services
     const services = initializeServices();
 
-    // Attach services to Fastify instance for route access
-    (fastify as any).navigationEngine = services.navigationEngine;
-    (fastify as any).directionTranslator = services.directionTranslator;
-    (fastify as any).triggerEvaluator = services.triggerEvaluator;
-
     // Register routes
     await registerRoutes(services);
 
     // Register WebSocket
-    await registerWebSocketRoutes(services);
+    await registerWebSocket(services);
 
     // Start server
     await fastify.listen({

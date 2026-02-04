@@ -27,19 +27,34 @@ interface LoginBody {
  */
 interface UpdatePreferencesBody {
   voiceSpeed?: number;
-  verbosity?: 'brief' | 'normal' | 'detailed';
+  verbosity?: 'minimal' | 'normal' | 'detailed';
   stepLengthCm?: number;
 }
 
 /**
- * Authenticated request with user
+ * User type for authenticated requests
  */
-interface AuthenticatedRequest extends FastifyRequest {
-  user?: {
-    id: string;
-    email: string;
-  };
+interface AuthenticatedUser {
+  userId: string;
+  email: string;
 }
+
+/**
+ * Helper to get authenticated user from request
+ * The authenticate decorator sets request.user, but TypeScript doesn't know the type
+ */
+function getAuthenticatedUser(request: FastifyRequest): AuthenticatedUser | null {
+  const user = (request as any).user;
+  if (user && typeof user === 'object' && 'userId' in user && 'email' in user) {
+    return user as AuthenticatedUser;
+  }
+  return null;
+}
+
+/**
+ * Authenticated request type
+ */
+type AuthenticatedRequest = FastifyRequest;
 
 /**
  * Hash password using bcrypt
@@ -178,7 +193,7 @@ export default async function authRoutes(fastify: FastifyInstance) {
         token,
       });
     } catch (error) {
-      request.log.error(`[Auth] Registration error:`, error);
+        request.log.error({ err: error }, '[Auth] Registration error');
       return reply.code(500).send({
         error: 'internal_error',
         message: 'Failed to create user',
@@ -245,7 +260,7 @@ export default async function authRoutes(fastify: FastifyInstance) {
         token,
       });
     } catch (error) {
-      request.log.error(`[Auth] Login error:`, error);
+        request.log.error({ err: error }, '[Auth] Login error');
       return reply.code(500).send({
         error: 'internal_error',
         message: 'Failed to login',
@@ -326,7 +341,7 @@ export default async function authRoutes(fastify: FastifyInstance) {
         token: newToken,
       });
     } catch (error) {
-      request.log.error(`[Auth] Token refresh error:`, error);
+        request.log.error({ err: error }, '[Auth] Token refresh error');
       return reply.code(500).send({
         error: 'internal_error',
         message: 'Failed to refresh token',
@@ -341,10 +356,11 @@ export default async function authRoutes(fastify: FastifyInstance) {
   fastify.get(
     '/me',
     {
-      preHandler: [fastify.authenticate],
+      preHandler: [(fastify as any).authenticate],
     },
     async (request: AuthenticatedRequest, reply) => {
-      if (!request.user) {
+      const authUser = getAuthenticatedUser(request);
+      if (!authUser) {
         return reply.code(401).send({
           error: 'unauthorized',
           message: 'Not authenticated',
@@ -353,7 +369,7 @@ export default async function authRoutes(fastify: FastifyInstance) {
 
       try {
         const user = await prisma.user.findUnique({
-          where: { id: request.user.id },
+          where: { id: authUser.userId},
           select: {
             id: true,
             email: true,
@@ -388,7 +404,7 @@ export default async function authRoutes(fastify: FastifyInstance) {
           },
         });
       } catch (error) {
-        request.log.error(`[Auth] Get user error:`, error);
+        request.log.error({ err: error }, '[Auth] Get user error');
         return reply.code(500).send({
           error: 'internal_error',
           message: 'Failed to get user',
@@ -404,17 +420,19 @@ export default async function authRoutes(fastify: FastifyInstance) {
   fastify.put<{ Body: UpdatePreferencesBody }>(
     '/preferences',
     {
-      preHandler: [fastify.authenticate],
+      preHandler: [(fastify as any).authenticate],
     },
     async (request: AuthenticatedRequest, reply) => {
-      if (!request.user) {
+      const authUser = getAuthenticatedUser(request);
+      if (!authUser) {
         return reply.code(401).send({
           error: 'unauthorized',
           message: 'Not authenticated',
         });
       }
 
-      const { voiceSpeed, verbosity, stepLengthCm } = request.body;
+      const body = request.body as UpdatePreferencesBody;
+      const { voiceSpeed, verbosity, stepLengthCm } = body;
 
       // Validation
       if (voiceSpeed !== undefined && (voiceSpeed < 0.5 || voiceSpeed > 2.0)) {
@@ -424,7 +442,7 @@ export default async function authRoutes(fastify: FastifyInstance) {
         });
       }
 
-      if (verbosity !== undefined && !['brief', 'normal', 'detailed'].includes(verbosity)) {
+      if (verbosity !== undefined && !['minimal', 'normal', 'detailed'].includes(verbosity)) {
         return reply.code(400).send({
           error: 'validation_error',
           message: 'verbosity must be brief, normal, or detailed',
@@ -441,7 +459,7 @@ export default async function authRoutes(fastify: FastifyInstance) {
       try {
         // Get current user and preferences
         const user = await prisma.user.findUnique({
-          where: { id: request.user.id },
+          where: { id: authUser.userId },
         });
 
         if (!user) {
@@ -468,19 +486,19 @@ export default async function authRoutes(fastify: FastifyInstance) {
 
         // Save to database
         await prisma.user.update({
-          where: { id: request.user.id },
+          where: { id: authUser.userId },
           data: {
             preferences: JSON.stringify(updatedPreferences),
           },
         });
 
-        request.log.info(`[Auth] Preferences updated: ${request.user.id}`);
+        request.log.info(`[Auth] Preferences updated: ${authUser.userId}`);
 
         return reply.send({
           preferences: updatedPreferences,
         });
       } catch (error) {
-        request.log.error(`[Auth] Update preferences error:`, error);
+        request.log.error({ err: error }, '[Auth] Update preferences error');
         return reply.code(500).send({
           error: 'internal_error',
           message: 'Failed to update preferences',

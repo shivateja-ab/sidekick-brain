@@ -1,13 +1,9 @@
 import type { PrismaClient } from '@prisma/client';
 import type {
   NavigationSessionRuntime,
-  SessionStatus,
   PathSegment,
-  Checkpoint,
 } from '../models/NavigationSession';
-import type { Room, RoomWithRelations } from '../models/Room';
 import type { Doorway } from '../models/Doorway';
-import type { FlatMap, FlatMapWithRelations } from '../models/FlatMap';
 import { PathFinder } from './PathFinder';
 import { PositionTracker } from './PositionTracker';
 import { DirectionTranslator } from './DirectionTranslator';
@@ -828,7 +824,7 @@ export class NavigationEngine {
    */
   private checkCheckpoints(
     session: NavigationSessionRuntime,
-    userHeading: number
+    _userHeading: number
   ): ServerMessage | null {
     const currentSegment = session.path[session.currentSegmentIndex];
     if (!currentSegment || !currentSegment.checkpoints) {
@@ -906,7 +902,7 @@ export class NavigationEngine {
    * @returns Error message object
    */
   private createErrorMessage(
-    sessionId: string,
+    _sessionId: string,
     message: string,
     recoverable: boolean
   ): ServerMessage {

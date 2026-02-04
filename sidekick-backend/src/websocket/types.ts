@@ -1,5 +1,5 @@
-import type { SensorUpdatePayload, VisualResponsePayload, ServerMessage } from '../services/NavigationEngine';
-import type { ConnectedClient } from './SessionManager';
+import type { SensorUpdatePayload, VisualResponsePayload } from '../services/NavigationEngine';
+// import type { ConnectedClient } from './SessionManager';
 
 /**
  * Client message types sent from mobile app
@@ -62,4 +62,5 @@ export interface WebSocketServices {
   navigationEngine: any; // NavigationEngine
   sessionManager: any; // SessionManager
   fastify: any; // FastifyInstance
+  
 }

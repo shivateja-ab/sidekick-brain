@@ -1,15 +1,30 @@
-import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { prisma } from '../db/client';
 
 /**
- * Authenticated request with user
+ * User type for authenticated requests
  */
-interface AuthenticatedRequest extends FastifyRequest {
-  user?: {
-    id: string;
-    email: string;
-  };
+interface AuthenticatedUser {
+  userId: string;
+  email: string;
 }
+
+/**
+ * Helper to get authenticated user from request
+ * The authenticate decorator sets request.user, but TypeScript doesn't know the type
+ */
+function getAuthenticatedUser(request: FastifyRequest): AuthenticatedUser | null {
+  const user = (request as any).user;
+  if (user && typeof user === 'object' && 'userId' in user && 'email' in user) {
+    return user as AuthenticatedUser;
+  }
+  return null;
+}
+
+/**
+ * Authenticated request type
+ */
+type AuthenticatedRequest = FastifyRequest;
 
 /**
  * Create room request body
@@ -150,21 +165,22 @@ export default async function roomRoutes(fastify: FastifyInstance) {
   fastify.get<{ Params: { flatId: string } }>(
     '/',
     {
-      preHandler: [fastify.authenticate],
+      preHandler: [(fastify as any).authenticate],
     },
-    async (request: AuthenticatedRequest, reply) => {
-      if (!request.user) {
+    async (request, reply) => {
+      const authUser = getAuthenticatedUser(request);
+      if (!authUser) {
         return reply.code(401).send({
           error: 'unauthorized',
           message: 'Not authenticated',
         });
       }
 
-      const { flatId } = request.params;
+      const { flatId } = request.params as { flatId: string };
 
       try {
         // Verify flat ownership
-        await verifyFlatOwnership(flatId, request.user.id);
+        await verifyFlatOwnership(flatId, authUser.userId);
 
         // Get rooms with counts
         const rooms = await prisma.room.findMany({
@@ -185,7 +201,7 @@ export default async function roomRoutes(fastify: FastifyInstance) {
         request.log.info(`[Rooms] Listed ${rooms.length} rooms for flat ${flatId}`);
 
         return reply.send({
-          rooms: rooms.map((room) => ({
+          rooms: rooms.map((room: any) => ({
             id: room.id,
             type: room.type,
             name: room.name,
@@ -204,7 +220,7 @@ export default async function roomRoutes(fastify: FastifyInstance) {
           });
         }
 
-        request.log.error(`[Rooms] List error:`, error);
+        request.log.error({ err: error }, '[Rooms] List error');
         return reply.code(500).send({
           error: 'internal_error',
           message: 'Failed to list rooms',
@@ -220,18 +236,19 @@ export default async function roomRoutes(fastify: FastifyInstance) {
   fastify.post<{ Params: { flatId: string }; Body: CreateRoomBody }>(
     '/',
     {
-      preHandler: [fastify.authenticate],
+      preHandler: [(fastify as any).authenticate],
     },
     async (request: AuthenticatedRequest, reply) => {
-      if (!request.user) {
+      const authUser = getAuthenticatedUser(request);
+      if (!authUser) {
         return reply.code(401).send({
           error: 'unauthorized',
           message: 'Not authenticated',
         });
       }
 
-      const { flatId } = request.params;
-      const { type, name, positionX, positionY } = request.body;
+      const { flatId } = request.params as { flatId: string };
+      const { type, name, positionX, positionY } = request.body as CreateRoomBody;
 
       // Validation
       if (!type || !name || positionX === undefined || positionY === undefined) {
@@ -257,7 +274,7 @@ export default async function roomRoutes(fastify: FastifyInstance) {
 
       try {
         // Verify flat ownership
-        await verifyFlatOwnership(flatId, request.user.id);
+        await verifyFlatOwnership(flatId, authUser.userId);
 
         // Create room
         const room = await prisma.room.create({
@@ -288,7 +305,7 @@ export default async function roomRoutes(fastify: FastifyInstance) {
           });
         }
 
-        request.log.error(`[Rooms] Create error:`, error);
+        request.log.error({ err: error }, '[Rooms] Create error');
         return reply.code(500).send({
           error: 'internal_error',
           message: 'Failed to create room',
@@ -304,21 +321,22 @@ export default async function roomRoutes(fastify: FastifyInstance) {
   fastify.get<{ Params: { flatId: string; roomId: string } }>(
     '/:roomId',
     {
-      preHandler: [fastify.authenticate],
+      preHandler: [(fastify as any).authenticate],
     },
     async (request: AuthenticatedRequest, reply) => {
-      if (!request.user) {
+      const authUser = getAuthenticatedUser(request);
+      if (!authUser) {
         return reply.code(401).send({
           error: 'unauthorized',
           message: 'Not authenticated',
         });
       }
 
-      const { flatId, roomId } = request.params;
+      const { flatId, roomId } = request.params as { flatId: string; roomId: string };
 
       try {
         // Verify room ownership
-        await verifyRoomOwnership(flatId, roomId, request.user.id);
+        await verifyRoomOwnership(flatId, roomId, authUser.userId);
 
         // Get room with all relations
         const room = await prisma.room.findUnique({
@@ -362,17 +380,17 @@ export default async function roomRoutes(fastify: FastifyInstance) {
           name: room.name,
           positionX: room.positionX,
           positionY: room.positionY,
-          doorways: room.doorways.map((doorway) => ({
+          doorways: room.doorways.map((doorway: any) => ({
             id: doorway.id,
             toRoomId: doorway.toRoomId,
-            toRoomName: doorway.toRoom.name,
+            toRoomName: doorway.toRoom?.name || 'Unknown',
             compassHeading: doorway.compassHeading,
             distanceSteps: doorway.distanceSteps,
             type: doorway.type,
             positionX: doorway.positionX,
             positionY: doorway.positionY,
           })),
-          landmarks: room.landmarks.map((landmark) => ({
+          landmarks: room.landmarks.map((landmark: any) => ({
             id: landmark.id,
             name: landmark.name,
             description: landmark.description,
@@ -380,7 +398,7 @@ export default async function roomRoutes(fastify: FastifyInstance) {
             positionY: landmark.positionY,
             compassDirection: landmark.compassDirection,
           })),
-          referenceImages: room.referenceImages.map((image) => ({
+          referenceImages: room.referenceImages.map((image : any) => ({
             id: image.id,
             locationTag: image.locationTag,
             compassHeading: image.compassHeading,
@@ -396,7 +414,7 @@ export default async function roomRoutes(fastify: FastifyInstance) {
           });
         }
 
-        request.log.error(`[Rooms] Get error:`, error);
+        request.log.error({ err: error }, '[Rooms] Get error');
         return reply.code(500).send({
           error: 'internal_error',
           message: 'Failed to get room',
@@ -412,22 +430,23 @@ export default async function roomRoutes(fastify: FastifyInstance) {
   fastify.put<{ Params: { flatId: string; roomId: string }; Body: UpdateRoomBody }>(
     '/:roomId',
     {
-      preHandler: [fastify.authenticate],
+      preHandler: [(fastify as any).authenticate],
     },
     async (request: AuthenticatedRequest, reply) => {
-      if (!request.user) {
+      const authUser = getAuthenticatedUser(request);
+      if (!authUser) {
         return reply.code(401).send({
           error: 'unauthorized',
           message: 'Not authenticated',
         });
       }
 
-      const { flatId, roomId } = request.params;
-      const { type, name, positionX, positionY } = request.body;
+      const { flatId, roomId } = request.params as { flatId: string; roomId: string };
+      const { type, name, positionX, positionY } = request.body as UpdateRoomBody;
 
       try {
         // Verify room ownership
-        await verifyRoomOwnership(flatId, roomId, request.user.id);
+        await verifyRoomOwnership(flatId, roomId, authUser.userId);
 
         // Build update data
         const updateData: any = {};
@@ -484,7 +503,7 @@ export default async function roomRoutes(fastify: FastifyInstance) {
           });
         }
 
-        request.log.error(`[Rooms] Update error:`, error);
+        request.log.error({ err: error }, '[Rooms] Update error');
         return reply.code(500).send({
           error: 'internal_error',
           message: 'Failed to update room',
@@ -500,21 +519,22 @@ export default async function roomRoutes(fastify: FastifyInstance) {
   fastify.delete<{ Params: { flatId: string; roomId: string } }>(
     '/:roomId',
     {
-      preHandler: [fastify.authenticate],
+      preHandler: [(fastify as any).authenticate],
     },
     async (request: AuthenticatedRequest, reply) => {
-      if (!request.user) {
+      const authUser = getAuthenticatedUser(request);
+      if (!authUser) {
         return reply.code(401).send({
           error: 'unauthorized',
           message: 'Not authenticated',
         });
       }
 
-      const { flatId, roomId } = request.params;
+      const { flatId, roomId } = request.params as { flatId: string; roomId: string };
 
       try {
         // Verify room ownership
-        await verifyRoomOwnership(flatId, roomId, request.user.id);
+        await verifyRoomOwnership(flatId, roomId, authUser.userId);
 
         // Delete room (cascade will delete doorways, landmarks, images)
         await prisma.room.delete({
@@ -534,7 +554,7 @@ export default async function roomRoutes(fastify: FastifyInstance) {
           });
         }
 
-        request.log.error(`[Rooms] Delete error:`, error);
+        request.log.error({ err: error }, '[Rooms] Delete error');
         return reply.code(500).send({
           error: 'internal_error',
           message: 'Failed to delete room',
@@ -550,18 +570,19 @@ export default async function roomRoutes(fastify: FastifyInstance) {
   fastify.post<{ Params: { flatId: string; roomId: string }; Body: CreateDoorwayBody }>(
     '/:roomId/doorways',
     {
-      preHandler: [fastify.authenticate],
+      preHandler: [(fastify as any).authenticate],
     },
     async (request: AuthenticatedRequest, reply) => {
-      if (!request.user) {
+      const authUser = getAuthenticatedUser(request);
+      if (!authUser) {
         return reply.code(401).send({
           error: 'unauthorized',
           message: 'Not authenticated',
         });
       }
 
-      const { flatId, roomId } = request.params;
-      const { toRoomId, positionX, positionY, compassHeading, distanceSteps, type } = request.body;
+      const { flatId, roomId } = request.params as { flatId: string; roomId: string };
+      const { toRoomId, positionX, positionY, compassHeading, distanceSteps, type } = request.body as CreateDoorwayBody;
 
       // Validation
       if (!toRoomId || positionX === undefined || positionY === undefined || compassHeading === undefined) {
@@ -580,8 +601,8 @@ export default async function roomRoutes(fastify: FastifyInstance) {
 
       try {
         // Verify both rooms exist and belong to same flat
-        const fromRoom = await verifyRoomOwnership(flatId, roomId, request.user.id);
-        const toRoom = await verifyRoomOwnership(flatId, toRoomId, request.user.id);
+        await verifyRoomOwnership(flatId, roomId, authUser.userId);
+        await verifyRoomOwnership(flatId, toRoomId, authUser.userId);
 
         // Check if doorway already exists
         const existingDoorway = await prisma.doorway.findFirst({
@@ -645,7 +666,7 @@ export default async function roomRoutes(fastify: FastifyInstance) {
           });
         }
 
-        request.log.error(`[Rooms] Create doorway error:`, error);
+        request.log.error({ err: error }, '[Rooms] Create doorway error');
         return reply.code(500).send({
           error: 'internal_error',
           message: 'Failed to create doorway',
@@ -661,21 +682,22 @@ export default async function roomRoutes(fastify: FastifyInstance) {
   fastify.delete<{ Params: { flatId: string; roomId: string; doorwayId: string } }>(
     '/:roomId/doorways/:doorwayId',
     {
-      preHandler: [fastify.authenticate],
+      preHandler: [(fastify as any).authenticate],
     },
     async (request: AuthenticatedRequest, reply) => {
-      if (!request.user) {
+      const authUser = getAuthenticatedUser(request);
+      if (!authUser) {
         return reply.code(401).send({
           error: 'unauthorized',
           message: 'Not authenticated',
         });
       }
 
-      const { flatId, roomId, doorwayId } = request.params;
+      const { flatId, roomId, doorwayId } = request.params as { flatId: string; roomId: string; doorwayId: string };
 
       try {
         // Verify room ownership
-        await verifyRoomOwnership(flatId, roomId, request.user.id);
+        await verifyRoomOwnership(flatId, roomId, authUser.userId);
 
         // Get doorway to find reverse
         const doorway = await prisma.doorway.findUnique({
@@ -729,7 +751,7 @@ export default async function roomRoutes(fastify: FastifyInstance) {
           });
         }
 
-        request.log.error(`[Rooms] Delete doorway error:`, error);
+        request.log.error({ err: error }, '[Rooms] Delete doorway error');
         return reply.code(500).send({
           error: 'internal_error',
           message: 'Failed to delete doorway',
@@ -745,18 +767,19 @@ export default async function roomRoutes(fastify: FastifyInstance) {
   fastify.post<{ Params: { flatId: string; roomId: string }; Body: CreateLandmarkBody }>(
     '/:roomId/landmarks',
     {
-      preHandler: [fastify.authenticate],
+      preHandler: [(fastify as any).authenticate],
     },
     async (request: AuthenticatedRequest, reply) => {
-      if (!request.user) {
+      const authUser = getAuthenticatedUser(request);
+      if (!authUser) {
         return reply.code(401).send({
           error: 'unauthorized',
           message: 'Not authenticated',
         });
       }
 
-      const { flatId, roomId } = request.params;
-      const { name, description, positionX, positionY, compassDirection } = request.body;
+      const { flatId, roomId } = request.params as { flatId: string; roomId: string };
+      const { name, description, positionX, positionY, compassDirection } = request.body as CreateLandmarkBody;
 
       // Validation
       if (!name || positionX === undefined || positionY === undefined) {
@@ -775,7 +798,7 @@ export default async function roomRoutes(fastify: FastifyInstance) {
 
       try {
         // Verify room ownership
-        await verifyRoomOwnership(flatId, roomId, request.user.id);
+        await verifyRoomOwnership(flatId, roomId, authUser.userId);
 
         // Create landmark
         const landmark = await prisma.landmark.create({
@@ -807,7 +830,7 @@ export default async function roomRoutes(fastify: FastifyInstance) {
           });
         }
 
-        request.log.error(`[Rooms] Create landmark error:`, error);
+        request.log.error({ err: error }, '[Rooms] Create landmark error');
         return reply.code(500).send({
           error: 'internal_error',
           message: 'Failed to create landmark',
@@ -823,21 +846,22 @@ export default async function roomRoutes(fastify: FastifyInstance) {
   fastify.delete<{ Params: { flatId: string; roomId: string; landmarkId: string } }>(
     '/:roomId/landmarks/:landmarkId',
     {
-      preHandler: [fastify.authenticate],
+      preHandler: [(fastify as any).authenticate],
     },
     async (request: AuthenticatedRequest, reply) => {
-      if (!request.user) {
+      const authUser = getAuthenticatedUser(request);
+      if (!authUser) {
         return reply.code(401).send({
           error: 'unauthorized',
           message: 'Not authenticated',
         });
       }
 
-      const { flatId, roomId, landmarkId } = request.params;
+      const { flatId, roomId, landmarkId } = request.params as { flatId: string; roomId: string; landmarkId: string };
 
       try {
         // Verify room ownership
-        await verifyRoomOwnership(flatId, roomId, request.user.id);
+        await verifyRoomOwnership(flatId, roomId, authUser.userId);
 
         // Verify landmark belongs to room
         const landmark = await prisma.landmark.findUnique({
@@ -876,7 +900,7 @@ export default async function roomRoutes(fastify: FastifyInstance) {
           });
         }
 
-        request.log.error(`[Rooms] Delete landmark error:`, error);
+        request.log.error({ err: error }, '[Rooms] Delete landmark error');
         return reply.code(500).send({
           error: 'internal_error',
           message: 'Failed to delete landmark',

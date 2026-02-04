@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import type { ConnectedClient } from './SessionManager';
-import type { ClientMessage, ServerMessage, WebSocketServices } from './types';
+import type { ClientMessage, WebSocketServices } from './types';
 import { handleMessage, sendMessagesToClient } from './handlers';
 
 /**
@@ -161,7 +161,7 @@ export async function registerWebSocket(
         });
 
         // Handle connection close
-        connection.on('close', (code: number, reason: Buffer) => {
+        connection.on('close', (code: number, _reason: Buffer) => {
           if (client) {
             console.log(
               `[WS] Client disconnected: userId=${client.userId}, clientId=${client.id}, code=${code}`

@@ -1,16 +1,31 @@
-import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { prisma } from '../db/client';
 import type { FlatMapOrigin } from '../models/FlatMap';
 
 /**
- * Authenticated request with user
+ * User type for authenticated requests
  */
-interface AuthenticatedRequest extends FastifyRequest {
-  user?: {
-    id: string;
-    email: string;
-  };
+interface AuthenticatedUser {
+  userId: string;
+  email: string;
 }
+
+/**
+ * Helper to get authenticated user from request
+ * The authenticate decorator sets request.user, but TypeScript doesn't know the type
+ */
+function getAuthenticatedUser(request: FastifyRequest): AuthenticatedUser | null {
+  const user = (request as any).user;
+  if (user && typeof user === 'object' && 'userId' in user && 'email' in user) {
+    return user as AuthenticatedUser;
+  }
+  return null;
+}
+
+/**
+ * Authenticated request type
+ */
+type AuthenticatedRequest = FastifyRequest;
 
 /**
  * Create flat request body
@@ -96,24 +111,25 @@ export default async function flatRoutes(fastify: FastifyInstance) {
   fastify.get<{ Querystring: ListQuery }>(
     '/',
     {
-      preHandler: [fastify.authenticate],
+      preHandler: [(fastify as any).authenticate],
     },
     async (request: AuthenticatedRequest, reply) => {
-      if (!request.user) {
+      const authUser = getAuthenticatedUser(request);
+      if (!authUser) {
         return reply.code(401).send({
           error: 'unauthorized',
           message: 'Not authenticated',
         });
       }
-
-      const limit = Math.min(request.query.limit || 20, 100);
-      const offset = request.query.offset || 0;
+      const query = request.query as { limit?: number; offset?: number };
+      const limit = Math.min(query.limit || 20, 100);
+      const offset = query.offset || 0;
 
       try {
         // Get flats with room count
         const [flats, total] = await Promise.all([
           prisma.flatMap.findMany({
-            where: { userId: request.user.id },
+            where: { userId: authUser.userId },
             take: limit,
             skip: offset,
             orderBy: { updatedAt: 'desc' },
@@ -124,14 +140,14 @@ export default async function flatRoutes(fastify: FastifyInstance) {
             },
           }),
           prisma.flatMap.count({
-            where: { userId: request.user.id },
+            where: { userId: authUser.userId },
           }),
         ]);
 
-        request.log.info(`[Flats] Listed ${flats.length} flats for user ${request.user.id}`);
+        request.log.info(`[Flats] Listed ${flats.length} flats for user ${authUser.userId}`);
 
         return reply.send({
-          flats: flats.map((flat) => ({
+          flats: flats.map((flat: any) => ({
             id: flat.id,
             name: flat.name,
             roomCount: flat._count.rooms,
@@ -141,7 +157,7 @@ export default async function flatRoutes(fastify: FastifyInstance) {
           total,
         });
       } catch (error) {
-        request.log.error(`[Flats] List error:`, error);
+        request.log.error({ err: error }, '[Flats] List error');
         return reply.code(500).send({
           error: 'internal_error',
           message: 'Failed to list flats',
@@ -157,17 +173,19 @@ export default async function flatRoutes(fastify: FastifyInstance) {
   fastify.post<{ Body: CreateFlatBody }>(
     '/',
     {
-      preHandler: [fastify.authenticate],
+      preHandler: [(fastify as any).authenticate],
     },
     async (request: AuthenticatedRequest, reply) => {
-      if (!request.user) {
+      const authUser = getAuthenticatedUser(request);
+      console.log('authUser:', authUser);
+      if (!authUser) {
         return reply.code(401).send({
           error: 'unauthorized',
           message: 'Not authenticated',
         });
       }
 
-      const { name, origin } = request.body;
+      const { name, origin } = request.body as CreateFlatBody;
 
       // Validation
       if (!name || name.trim().length === 0) {
@@ -192,10 +210,10 @@ export default async function flatRoutes(fastify: FastifyInstance) {
       }
 
       try {
-        // Create flat
+        // Create flat  
         const flat = await prisma.flatMap.create({
           data: {
-            userId: request.user.id,
+            userId: authUser.userId,
             name: name.trim(),
             origin: JSON.stringify(origin),
           },
@@ -204,7 +222,7 @@ export default async function flatRoutes(fastify: FastifyInstance) {
         // Parse origin for response
         const originParsed: FlatMapOrigin = JSON.parse(flat.origin);
 
-        request.log.info(`[Flats] Created flat: ${flat.id} for user ${request.user.id}`);
+        request.log.info(`[Flats] Created flat: ${flat.id} for user ${authUser.userId}`);
 
         return reply.code(201).send({
           id: flat.id,
@@ -213,7 +231,7 @@ export default async function flatRoutes(fastify: FastifyInstance) {
           createdAt: flat.createdAt.toISOString(),
         });
       } catch (error) {
-        request.log.error(`[Flats] Create error:`, error);
+        request.log.error({ err: error }, '[Flats] Create error');
         return reply.code(500).send({
           error: 'internal_error',
           message: 'Failed to create flat',
@@ -229,21 +247,22 @@ export default async function flatRoutes(fastify: FastifyInstance) {
   fastify.get<{ Params: { flatId: string } }>(
     '/:flatId',
     {
-      preHandler: [fastify.authenticate],
+      preHandler: [(fastify as any).authenticate],
     },
     async (request: AuthenticatedRequest, reply) => {
-      if (!request.user) {
+      const authUser = getAuthenticatedUser(request);
+      if (!authUser) {
         return reply.code(401).send({
           error: 'unauthorized',
           message: 'Not authenticated',
         });
       }
 
-      const { flatId } = request.params;
+      const { flatId } = request.params as { flatId: string };
 
       try {
         // Verify ownership
-        await verifyFlatOwnership(flatId, request.user.id);
+        await verifyFlatOwnership(flatId, authUser.userId);
 
         // Get flat with all relations
         const flat = await prisma.flatMap.findUnique({
@@ -303,13 +322,13 @@ export default async function flatRoutes(fastify: FastifyInstance) {
           id: flat.id,
           name: flat.name,
           origin: originParsed,
-          rooms: flat.rooms.map((room) => ({
+          rooms: flat.rooms.map((room: any) => ({
             id: room.id,
             type: room.type,
             name: room.name,
             positionX: room.positionX,
             positionY: room.positionY,
-            doorways: room.doorways.map((doorway) => ({
+            doorways: room.doorways.map((doorway: any) => ({
               id: doorway.id,
               fromRoomId: doorway.fromRoomId,
               toRoomId: doorway.toRoomId,
@@ -320,7 +339,7 @@ export default async function flatRoutes(fastify: FastifyInstance) {
               type: doorway.type,
               distanceSteps: doorway.distanceSteps,
             })),
-            incomingDoorways: room.incomingDoorways.map((doorway) => ({
+            incomingDoorways: room.incomingDoorways.map((doorway: any) => ({
               id: doorway.id,
               fromRoomId: doorway.fromRoomId,
               toRoomId: doorway.toRoomId,
@@ -331,7 +350,7 @@ export default async function flatRoutes(fastify: FastifyInstance) {
               type: doorway.type,
               distanceSteps: doorway.distanceSteps,
             })),
-            landmarks: room.landmarks.map((landmark) => ({
+            landmarks: room.landmarks.map((landmark: any) => ({
               id: landmark.id,
               name: landmark.name,
               description: landmark.description,
@@ -352,7 +371,7 @@ export default async function flatRoutes(fastify: FastifyInstance) {
           });
         }
 
-        request.log.error(`[Flats] Get error:`, error);
+        request.log.error({ err: error }, '[Flats] Get error');
         return reply.code(500).send({
           error: 'internal_error',
           message: 'Failed to get flat',
@@ -368,22 +387,23 @@ export default async function flatRoutes(fastify: FastifyInstance) {
   fastify.put<{ Params: { flatId: string }; Body: UpdateFlatBody }>(
     '/:flatId',
     {
-      preHandler: [fastify.authenticate],
+      preHandler: [(fastify as any).authenticate],
     },
     async (request: AuthenticatedRequest, reply) => {
-      if (!request.user) {
+      const authUser = getAuthenticatedUser(request);
+      if (!authUser) {
         return reply.code(401).send({
           error: 'unauthorized',
           message: 'Not authenticated',
         });
       }
 
-      const { flatId } = request.params;
-      const { name, origin } = request.body;
+      const { flatId } = request.params as { flatId: string };
+      const { name, origin } = request.body as UpdateFlatBody;
 
       try {
         // Verify ownership
-        const flat = await verifyFlatOwnership(flatId, request.user.id);
+        await verifyFlatOwnership(flatId, authUser.userId);
 
         // Build update data
         const updateData: any = {};
@@ -442,7 +462,7 @@ export default async function flatRoutes(fastify: FastifyInstance) {
           });
         }
 
-        request.log.error(`[Flats] Update error:`, error);
+        request.log.error({ err: error }, '[Flats] Update error');
         return reply.code(500).send({
           error: 'internal_error',
           message: 'Failed to update flat',
@@ -458,21 +478,22 @@ export default async function flatRoutes(fastify: FastifyInstance) {
   fastify.delete<{ Params: { flatId: string } }>(
     '/:flatId',
     {
-      preHandler: [fastify.authenticate],
+      preHandler: [(fastify as any).authenticate],
     },
     async (request: AuthenticatedRequest, reply) => {
-      if (!request.user) {
+      const authUser = getAuthenticatedUser(request);
+      if (!authUser) {
         return reply.code(401).send({
           error: 'unauthorized',
           message: 'Not authenticated',
         });
       }
 
-      const { flatId } = request.params;
+      const { flatId } = request.params as { flatId: string };
 
       try {
         // Verify ownership
-        await verifyFlatOwnership(flatId, request.user.id);
+        await verifyFlatOwnership(flatId, authUser.userId);
 
         // Delete flat (cascade will delete rooms, doorways, etc.)
         await prisma.flatMap.delete({
@@ -492,7 +513,7 @@ export default async function flatRoutes(fastify: FastifyInstance) {
           });
         }
 
-        request.log.error(`[Flats] Delete error:`, error);
+        request.log.error({ err: error }, '[Flats] Delete error');
         return reply.code(500).send({
           error: 'internal_error',
           message: 'Failed to delete flat',

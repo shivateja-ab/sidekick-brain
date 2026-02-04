@@ -1,17 +1,32 @@
-import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { prisma } from '../db/client';
 import type { SensorUpdatePayload, VisualResponsePayload } from '../services/NavigationEngine';
 import type { VisualTrigger } from '../services/TriggerEvaluator';
 
 /**
- * Authenticated request with user
+ * User type for authenticated requests
  */
-interface AuthenticatedRequest extends FastifyRequest {
-  user?: {
-    id: string;
-    email: string;
-  };
+interface AuthenticatedUser {
+  id: string;
+  email: string;
 }
+
+/**
+ * Helper to get authenticated user from request
+ * The authenticate decorator sets request.user, but TypeScript doesn't know the type
+ */
+function getAuthenticatedUser(request: FastifyRequest): AuthenticatedUser | null {
+  const user = (request as any).user;
+  if (user && typeof user === 'object' && 'id' in user && 'email' in user) {
+    return user as AuthenticatedUser;
+  }
+  return null;
+}
+
+/**
+ * Authenticated request type
+ */
+type AuthenticatedRequest = FastifyRequest;
 
 /**
  * Start navigation request body
@@ -183,17 +198,18 @@ export default async function navigateRoutes(fastify: FastifyInstance) {
   fastify.post<{ Body: StartNavigationBody }>(
     '/start',
     {
-      preHandler: [fastify.authenticate],
+      preHandler: [(fastify as any).authenticate],
     },
     async (request: AuthenticatedRequest, reply) => {
-      if (!request.user) {
+      const authUser = getAuthenticatedUser(request);
+      if (!authUser) {
         return reply.code(401).send({
           error: 'unauthorized',
           message: 'Not authenticated',
         });
       }
 
-      const { flatMapId, destinationRoomId, currentRoomId, currentCompassHeading } = request.body;
+      const { flatMapId, destinationRoomId, currentRoomId, currentCompassHeading } = request.body as StartNavigationBody;
 
       // Validation
       if (!flatMapId || !destinationRoomId) {
@@ -206,7 +222,7 @@ export default async function navigateRoutes(fastify: FastifyInstance) {
       try {
         // Start navigation
         const { session, messages } = await navigationEngine.startNavigation(
-          request.user.id,
+          authUser.id,
           flatMapId,
           destinationRoomId,
           currentRoomId,
@@ -224,11 +240,11 @@ export default async function navigateRoutes(fastify: FastifyInstance) {
           status: session.status,
           path: session.path,
           instruction,
-          totalSteps: session.path.reduce((sum, seg) => sum + seg.distanceSteps, 0),
+          totalSteps: session.path.reduce((sum: number, seg: any) => sum + seg.distanceSteps, 0),
           visualRequest,
         });
       } catch (error: any) {
-        request.log.error(`[Navigate] Start error:`, error);
+        request.log.error({ err: error }, '[Navigate] Start error');
         return reply.code(500).send({
           error: 'internal_error',
           message: error.message || 'Failed to start navigation',
@@ -244,18 +260,19 @@ export default async function navigateRoutes(fastify: FastifyInstance) {
   fastify.post<{ Params: { sessionId: string }; Body: UpdateNavigationBody }>(
     '/:sessionId/update',
     {
-      preHandler: [fastify.authenticate],
+      preHandler: [(fastify as any).authenticate],
     },
     async (request: AuthenticatedRequest, reply) => {
-      if (!request.user) {
+      const authUser = getAuthenticatedUser(request);
+      if (!authUser) {
         return reply.code(401).send({
           error: 'unauthorized',
           message: 'Not authenticated',
         });
       }
 
-      const { sessionId } = request.params;
-      const payload: SensorUpdatePayload = request.body;
+      const { sessionId } = request.params as { sessionId: string };
+      const payload = request.body as SensorUpdatePayload;
 
       // Validation
       if (
@@ -280,7 +297,7 @@ export default async function navigateRoutes(fastify: FastifyInstance) {
 
       try {
         // Verify session ownership
-        await verifySessionOwnership(sessionId, request.user.id);
+        await verifySessionOwnership(sessionId, authUser.id);
 
         // Process sensor update
         const messages = await navigationEngine.processSensorUpdate(sessionId, payload);
@@ -321,7 +338,7 @@ export default async function navigateRoutes(fastify: FastifyInstance) {
           });
         }
 
-        request.log.error(`[Navigate] Update error:`, error);
+        request.log.error({ err: error }, '[Navigate] Update error');
         return reply.code(500).send({
           error: 'internal_error',
           message: error.message || 'Failed to process sensor update',
@@ -337,21 +354,23 @@ export default async function navigateRoutes(fastify: FastifyInstance) {
   fastify.post<{ Params: { sessionId: string }; Body: VisualConfirmationBody }>(
     '/:sessionId/visual',
     {
-      preHandler: [fastify.authenticate],
+      preHandler: [(fastify as any).authenticate],
     },
     async (request: AuthenticatedRequest, reply) => {
-      if (!request.user) {
+      const authUser = getAuthenticatedUser(request);
+      if (!authUser) {
         return reply.code(401).send({
           error: 'unauthorized',
           message: 'Not authenticated',
         });
       }
 
-      const { sessionId } = request.params;
+      const { sessionId } = request.params as { sessionId: string };
+      const body = request.body as VisualConfirmationBody;
       const payload: VisualResponsePayload = {
-        currentImage: request.body.currentImage,
-        referenceImage: request.body.referenceImage,
-        compassHeading: request.body.compassHeading,
+        currentImage: body.currentImage,
+        referenceImage: body.referenceImage,
+        compassHeading: body.compassHeading,
         capturedAt: Date.now(),
       };
 
@@ -365,13 +384,13 @@ export default async function navigateRoutes(fastify: FastifyInstance) {
 
       try {
         // Verify session ownership
-        await verifySessionOwnership(sessionId, request.user.id);
+        await verifySessionOwnership(sessionId, authUser.id);
 
         // Process visual response
         const messages = await navigationEngine.processVisualResponse(sessionId, payload);
 
         // Extract visual result and instruction
-        const visualResult = messages.find((msg) => msg.type === 'visual_result');
+        const visualResult = messages.find((msg: any) => msg.type === 'visual_result');
         const instruction = extractInstruction(messages);
 
         if (!visualResult || visualResult.type !== 'visual_result') {
@@ -396,7 +415,7 @@ export default async function navigateRoutes(fastify: FastifyInstance) {
           });
         }
 
-        request.log.error(`[Navigate] Visual error:`, error);
+        request.log.error({ err: error }, '[Navigate] Visual error');
         return reply.code(500).send({
           error: 'internal_error',
           message: error.message || 'Failed to process visual confirmation',
@@ -412,21 +431,22 @@ export default async function navigateRoutes(fastify: FastifyInstance) {
   fastify.get<{ Params: { sessionId: string } }>(
     '/:sessionId/status',
     {
-      preHandler: [fastify.authenticate],
+      preHandler: [(fastify as any).authenticate],
     },
     async (request: AuthenticatedRequest, reply) => {
-      if (!request.user) {
+      const authUser = getAuthenticatedUser(request);
+      if (!authUser) {
         return reply.code(401).send({
           error: 'unauthorized',
           message: 'Not authenticated',
         });
       }
 
-      const { sessionId } = request.params;
+      const { sessionId } = request.params as { sessionId: string };
 
       try {
         // Verify session ownership
-        await verifySessionOwnership(sessionId, request.user.id);
+        await verifySessionOwnership(sessionId, authUser.id);
 
         // Get session
         const session = navigationEngine.getSession(sessionId);
@@ -477,7 +497,7 @@ export default async function navigateRoutes(fastify: FastifyInstance) {
           });
         }
 
-        request.log.error(`[Navigate] Status error:`, error);
+        request.log.error({ err: error }, '[Navigate] Status error');
         return reply.code(500).send({
           error: 'internal_error',
           message: 'Failed to get session status',
@@ -493,26 +513,27 @@ export default async function navigateRoutes(fastify: FastifyInstance) {
   fastify.post<{ Params: { sessionId: string } }>(
     '/:sessionId/cancel',
     {
-      preHandler: [fastify.authenticate],
+      preHandler: [(fastify as any).authenticate],
     },
     async (request: AuthenticatedRequest, reply) => {
-      if (!request.user) {
+      const authUser = getAuthenticatedUser(request);
+      if (!authUser) {
         return reply.code(401).send({
           error: 'unauthorized',
           message: 'Not authenticated',
         });
       }
 
-      const { sessionId } = request.params;
+      const { sessionId } = request.params as { sessionId: string };
 
       try {
         // Verify session ownership
-        await verifySessionOwnership(sessionId, request.user.id);
+        await verifySessionOwnership(sessionId, authUser.id);
 
         // Cancel navigation
         const messages = await navigationEngine.cancelNavigation(sessionId);
 
-        const cancelMessage = messages.find((msg) => msg.type === 'navigation_cancelled');
+        const cancelMessage = messages.find((msg: any) => msg.type === 'navigation_cancelled');
 
         return reply.send({
           success: true,
@@ -526,7 +547,7 @@ export default async function navigateRoutes(fastify: FastifyInstance) {
           });
         }
 
-        request.log.error(`[Navigate] Cancel error:`, error);
+        request.log.error({ err: error }, '[Navigate] Cancel error');
         return reply.code(500).send({
           error: 'internal_error',
           message: 'Failed to cancel navigation',
@@ -542,26 +563,27 @@ export default async function navigateRoutes(fastify: FastifyInstance) {
   fastify.post<{ Params: { sessionId: string } }>(
     '/:sessionId/pause',
     {
-      preHandler: [fastify.authenticate],
+      preHandler: [(fastify as any).authenticate],
     },
     async (request: AuthenticatedRequest, reply) => {
-      if (!request.user) {
+      const authUser = getAuthenticatedUser(request);
+      if (!authUser) {
         return reply.code(401).send({
           error: 'unauthorized',
           message: 'Not authenticated',
         });
       }
 
-      const { sessionId } = request.params;
+      const { sessionId } = request.params as { sessionId: string };
 
       try {
         // Verify session ownership
-        await verifySessionOwnership(sessionId, request.user.id);
+        await verifySessionOwnership(sessionId, authUser.id);
 
         // Pause navigation
         const messages = await navigationEngine.pauseNavigation(sessionId);
 
-        const pauseMessage = messages.find((msg) => msg.type === 'instruction');
+        const pauseMessage = messages.find((msg: any) => msg.type === 'instruction');
 
         return reply.send({
           success: true,
@@ -575,7 +597,7 @@ export default async function navigateRoutes(fastify: FastifyInstance) {
           });
         }
 
-        request.log.error(`[Navigate] Pause error:`, error);
+        request.log.error({ err: error }, '[Navigate] Pause error');
         return reply.code(500).send({
           error: 'internal_error',
           message: 'Failed to pause navigation',
@@ -591,26 +613,27 @@ export default async function navigateRoutes(fastify: FastifyInstance) {
   fastify.post<{ Params: { sessionId: string } }>(
     '/:sessionId/resume',
     {
-      preHandler: [fastify.authenticate],
+      preHandler: [(fastify as any).authenticate],
     },
     async (request: AuthenticatedRequest, reply) => {
-      if (!request.user) {
+      const authUser = getAuthenticatedUser(request);
+      if (!authUser) {
         return reply.code(401).send({
           error: 'unauthorized',
           message: 'Not authenticated',
         });
       }
 
-      const { sessionId } = request.params;
+      const { sessionId } = request.params as { sessionId: string };
 
       try {
         // Verify session ownership
-        await verifySessionOwnership(sessionId, request.user.id);
+        await verifySessionOwnership(sessionId, authUser.id);
 
         // Resume navigation
         const messages = await navigationEngine.resumeNavigation(sessionId);
 
-        const instructionMessage = messages.find((msg) => msg.type === 'instruction');
+        const instructionMessage = messages.find((msg: any) => msg.type === 'instruction');
 
         return reply.send({
           success: true,
@@ -625,7 +648,7 @@ export default async function navigateRoutes(fastify: FastifyInstance) {
           });
         }
 
-        request.log.error(`[Navigate] Resume error:`, error);
+        request.log.error({ err: error }, '[Navigate] Resume error');
         return reply.code(500).send({
           error: 'internal_error',
           message: 'Failed to resume navigation',

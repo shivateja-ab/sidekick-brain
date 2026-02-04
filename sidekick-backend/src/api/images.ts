@@ -1,17 +1,32 @@
-import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { prisma } from '../db/client';
 import { VisionClient } from '../services/VisionClient';
 import { config } from '../config';
 
 /**
- * Authenticated request with user
+ * User type for authenticated requests
  */
-interface AuthenticatedRequest extends FastifyRequest {
-  user?: {
-    id: string;
-    email: string;
-  };
+interface AuthenticatedUser {
+  userId: string;
+  email: string;
 }
+
+/**
+ * Helper to get authenticated user from request
+ * The authenticate decorator sets request.user, but TypeScript doesn't know the type
+ */
+function getAuthenticatedUser(request: FastifyRequest): AuthenticatedUser | null {
+  const user = (request as any).user;
+  if (user && typeof user === 'object' && 'userId' in user && 'email' in user) {
+    return user as AuthenticatedUser;
+  }
+  return null;
+}
+
+/**
+ * Authenticated request type
+ */
+type AuthenticatedRequest = FastifyRequest;
 
 /**
  * Upload image request body
@@ -177,18 +192,19 @@ export default async function imageRoutes(fastify: FastifyInstance) {
   fastify.post<{ Params: { flatId: string; roomId: string }; Body: UploadImageBody }>(
     '/',
     {
-      preHandler: [fastify.authenticate],
+      preHandler: [(fastify as any).authenticate],
     },
     async (request: AuthenticatedRequest, reply) => {
-      if (!request.user) {
+      const authUser = getAuthenticatedUser(request);
+      if (!authUser) {
         return reply.code(401).send({
           error: 'unauthorized',
           message: 'Not authenticated',
         });
       }
 
-      const { flatId, roomId } = request.params;
-      const { imageData, locationTag, compassHeading } = request.body;
+      const { flatId, roomId } = request.params as { flatId: string; roomId: string };
+      const { imageData, locationTag, compassHeading } = request.body as UploadImageBody;
 
       // Validation
       if (!imageData || !locationTag || compassHeading === undefined) {
@@ -223,7 +239,7 @@ export default async function imageRoutes(fastify: FastifyInstance) {
 
       try {
         // Verify room ownership
-        await verifyRoomOwnership(flatId, roomId, request.user.id);
+        await verifyRoomOwnership(flatId, roomId, authUser.userId);
 
         // Check image count limit
         const imageCount = await prisma.referenceImage.count({
@@ -256,7 +272,7 @@ export default async function imageRoutes(fastify: FastifyInstance) {
             }
           } catch (visionError) {
             // Don't fail image upload if Vision API fails
-            request.log.warn(`[Images] Vision API error (continuing anyway):`, visionError);
+            request.log.warn({ err: visionError }, '[Images] Vision API error (continuing anyway)');
           }
         }
 
@@ -292,7 +308,7 @@ export default async function imageRoutes(fastify: FastifyInstance) {
           });
         }
 
-        request.log.error(`[Images] Upload error:`, error);
+        request.log.error({ err: error }, '[Images] Upload error');
         return reply.code(500).send({
           error: 'internal_error',
           message: 'Failed to upload image',
@@ -308,21 +324,22 @@ export default async function imageRoutes(fastify: FastifyInstance) {
   fastify.get<{ Params: { flatId: string; roomId: string } }>(
     '/',
     {
-      preHandler: [fastify.authenticate],
+      preHandler: [(fastify as any).authenticate],
     },
     async (request: AuthenticatedRequest, reply) => {
-      if (!request.user) {
+      const authUser = getAuthenticatedUser(request);
+      if (!authUser) {
         return reply.code(401).send({
           error: 'unauthorized',
           message: 'Not authenticated',
         });
       }
 
-      const { flatId, roomId } = request.params;
+      const { flatId, roomId } = request.params as { flatId: string; roomId: string };
 
       try {
         // Verify room ownership
-        await verifyRoomOwnership(flatId, roomId, request.user.id);
+        await verifyRoomOwnership(flatId, roomId, authUser.userId);
 
         // Get images (without imageData)
         const images = await prisma.referenceImage.findMany({
@@ -341,7 +358,7 @@ export default async function imageRoutes(fastify: FastifyInstance) {
         request.log.info(`[Images] Listed ${images.length} images for room ${roomId}`);
 
         return reply.send({
-          images: images.map((image) => ({
+          images: images.map((image: any) => ({
             id: image.id,
             locationTag: image.locationTag,
             compassHeading: image.compassHeading,
@@ -360,7 +377,7 @@ export default async function imageRoutes(fastify: FastifyInstance) {
           });
         }
 
-        request.log.error(`[Images] List error:`, error);
+        request.log.error({ err: error }, '[Images] List error');
         return reply.code(500).send({
           error: 'internal_error',
           message: 'Failed to list images',
@@ -376,21 +393,22 @@ export default async function imageRoutes(fastify: FastifyInstance) {
   fastify.get<{ Params: { flatId: string; roomId: string; imageId: string } }>(
     '/:imageId',
     {
-      preHandler: [fastify.authenticate],
+      preHandler: [(fastify as any).authenticate],
     },
     async (request: AuthenticatedRequest, reply) => {
-      if (!request.user) {
+      const authUser = getAuthenticatedUser(request);
+      if (!authUser) {
         return reply.code(401).send({
           error: 'unauthorized',
           message: 'Not authenticated',
         });
       }
 
-      const { flatId, roomId, imageId } = request.params;
+      const { flatId, roomId, imageId } = request.params as { flatId: string; roomId: string; imageId: string };
 
       try {
         // Verify room ownership
-        await verifyRoomOwnership(flatId, roomId, request.user.id);
+        await verifyRoomOwnership(flatId, roomId, authUser.userId);
 
         // Get image with data
         const image = await prisma.referenceImage.findUnique({
@@ -432,7 +450,7 @@ export default async function imageRoutes(fastify: FastifyInstance) {
           });
         }
 
-        request.log.error(`[Images] Get error:`, error);
+        request.log.error({ err: error }, '[Images] Get error');
         return reply.code(500).send({
           error: 'internal_error',
           message: 'Failed to get image',
@@ -451,22 +469,23 @@ export default async function imageRoutes(fastify: FastifyInstance) {
   }>(
     '/:imageId',
     {
-      preHandler: [fastify.authenticate],
+      preHandler: [(fastify as any).authenticate],
     },
     async (request: AuthenticatedRequest, reply) => {
-      if (!request.user) {
+      const authUser = getAuthenticatedUser(request);
+      if (!authUser) {
         return reply.code(401).send({
           error: 'unauthorized',
           message: 'Not authenticated',
         });
       }
 
-      const { flatId, roomId, imageId } = request.params;
-      const { locationTag, compassHeading, description } = request.body;
+      const { flatId, roomId, imageId } = request.params as { flatId: string; roomId: string; imageId: string };
+      const { locationTag, compassHeading, description } = request.body as UpdateImageBody;
 
       try {
         // Verify room ownership
-        await verifyRoomOwnership(flatId, roomId, request.user.id);
+        await verifyRoomOwnership(flatId, roomId, authUser.userId);
 
         // Verify image belongs to room
         const image = await prisma.referenceImage.findUnique({
@@ -540,7 +559,7 @@ export default async function imageRoutes(fastify: FastifyInstance) {
           });
         }
 
-        request.log.error(`[Images] Update error:`, error);
+        request.log.error({ err: error }, '[Images] Update error');
         return reply.code(500).send({
           error: 'internal_error',
           message: 'Failed to update image',
@@ -556,21 +575,22 @@ export default async function imageRoutes(fastify: FastifyInstance) {
   fastify.delete<{ Params: { flatId: string; roomId: string; imageId: string } }>(
     '/:imageId',
     {
-      preHandler: [fastify.authenticate],
+      preHandler: [(fastify as any).authenticate],
     },
     async (request: AuthenticatedRequest, reply) => {
-      if (!request.user) {
+      const authUser = getAuthenticatedUser(request);
+      if (!authUser) {
         return reply.code(401).send({
           error: 'unauthorized',
           message: 'Not authenticated',
         });
       }
 
-      const { flatId, roomId, imageId } = request.params;
+      const { flatId, roomId, imageId } = request.params as { flatId: string; roomId: string; imageId: string };
 
       try {
         // Verify room ownership
-        await verifyRoomOwnership(flatId, roomId, request.user.id);
+        await verifyRoomOwnership(flatId, roomId, authUser.userId);
 
         // Verify image belongs to room
         const image = await prisma.referenceImage.findUnique({
@@ -609,7 +629,7 @@ export default async function imageRoutes(fastify: FastifyInstance) {
           });
         }
 
-        request.log.error(`[Images] Delete error:`, error);
+        request.log.error({ err: error }, '[Images] Delete error');
         return reply.code(500).send({
           error: 'internal_error',
           message: 'Failed to delete image',
@@ -625,21 +645,22 @@ export default async function imageRoutes(fastify: FastifyInstance) {
   fastify.post<{ Params: { flatId: string; roomId: string; imageId: string } }>(
     '/:imageId/analyze',
     {
-      preHandler: [fastify.authenticate],
+      preHandler: [(fastify as any).authenticate],
     },
     async (request: AuthenticatedRequest, reply) => {
-      if (!request.user) {
+      const authUser = getAuthenticatedUser(request);
+      if (!authUser) {
         return reply.code(401).send({
           error: 'unauthorized',
           message: 'Not authenticated',
         });
       }
 
-      const { flatId, roomId, imageId } = request.params;
+      const { flatId, roomId, imageId } = request.params as { flatId: string; roomId: string; imageId: string };
 
       try {
         // Verify room ownership
-        await verifyRoomOwnership(flatId, roomId, request.user.id);
+        await verifyRoomOwnership(flatId, roomId, authUser.userId);
 
         // Get image
         const image = await prisma.referenceImage.findUnique({
@@ -716,7 +737,7 @@ export default async function imageRoutes(fastify: FastifyInstance) {
           });
         }
 
-        request.log.error(`[Images] Analyze error:`, error);
+        request.log.error({ err: error }, '[Images] Analyze error');
         return reply.code(500).send({
           error: 'internal_error',
           message: 'Failed to analyze image',
