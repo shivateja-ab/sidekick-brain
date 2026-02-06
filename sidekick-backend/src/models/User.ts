@@ -36,5 +36,5 @@ export interface UpdateUserInput {
 }
 
 // Import types that will be defined in other files
-import type { FlatMap } from './FlatMap';
-import type { NavigationSession } from './NavigationSession';
+import type { FlatMap } from './FlatMap.js';
+import type { NavigationSession } from './NavigationSession.js';

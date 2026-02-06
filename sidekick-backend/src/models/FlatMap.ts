@@ -32,6 +32,6 @@ export interface UpdateFlatMapInput {
 }
 
 // Import types that will be defined in other files
-import type { User } from './User';
-import type { Room } from './Room';
-import type { NavigationSession } from './NavigationSession';
+import type { User } from './User.js';
+import type { Room } from './Room.js';
+import type { NavigationSession } from './NavigationSession.js';

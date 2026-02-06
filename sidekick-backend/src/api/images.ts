@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import { prisma } from '../db/client';
-import { VisionClient } from '../services/VisionClient';
-import { config } from '../config';
+import { prisma } from '../db/client.js';
+import { VisionClient } from '../services/VisionClient.js';
+import { config } from '../config.js';
 
 /**
  * User type for authenticated requests

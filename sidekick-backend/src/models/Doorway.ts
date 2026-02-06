@@ -37,4 +37,4 @@ export interface UpdateDoorwayInput {
 }
 
 // Import types that will be defined in other files
-import type { Room } from './Room';
+import type { Room } from './Room.js';

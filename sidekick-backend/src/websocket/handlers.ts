@@ -1,9 +1,9 @@
-import type { ConnectedClient } from './SessionManager';
-import type { ClientMessage, WebSocketServices } from './types';
-import { ServerMessage } from '../services/NavigationEngine';
-import type { NavigationEngine } from '../services/NavigationEngine';
-import type { SessionManager } from './SessionManager';
-import type { TriggerEvaluator } from '../services/TriggerEvaluator';
+import type { ConnectedClient } from './SessionManager.js';
+import type { ClientMessage, WebSocketServices } from './types.js';
+import { ServerMessage } from '../services/NavigationEngine.js';
+import type { NavigationEngine } from '../services/NavigationEngine.js';
+import type { SessionManager } from './SessionManager.js';
+import type { TriggerEvaluator } from '../services/TriggerEvaluator.js';
 
 /**
  * Send a message to a WebSocket client
@@ -129,13 +129,13 @@ async function handleOutdoorNavigation(
 ): Promise<ServerMessage[]> {
   const { destination, currentPosition } = payload;
   const sessionManager = services.sessionManager as SessionManager;
-  
+
   console.log(`[WS] Starting outdoor navigation for ${client.userId} to ${destination}`);
-  
+
   // Create a session ID for outdoor navigation
   const sessionId = `outdoor_${Date.now()}_${client.id}`;
   sessionManager.setActiveSession(client.id, sessionId);
-  
+
   // Store outdoor navigation session
   outdoorNavigationSessions.set(sessionId, {
     userId: client.userId,
@@ -144,7 +144,7 @@ async function handleOutdoorNavigation(
     currentPosition,
     heading: null,
   });
-  
+
   // TODO: Call routing API (Google Directions, OSRM, etc.) to get route
   // For now, send mock route data
   const mockRoute: ServerMessage = {
@@ -184,7 +184,7 @@ async function handleOutdoorNavigation(
       },
     ],
   };
-  
+
   const firstInstruction: ServerMessage = {
     type: 'instruction',
     text: mockRoute.steps[0].instruction,
@@ -199,7 +199,7 @@ async function handleOutdoorNavigation(
     stepsRemaining: mockRoute.totalDistance,
     confidence: 1.0,
   };
-  
+
   return [mockRoute, firstInstruction];
 }
 
@@ -501,9 +501,9 @@ export async function handleCancel(
       outdoorNavigationSessions.delete(client.sessionId);
     }
     sessionManager.clearActiveSession(client.id);
-    
+
     console.log(`[WS] Outdoor navigation cancelled for ${client.userId}`);
-    
+
     return [
       {
         type: 'navigation_cancelled',
@@ -693,13 +693,13 @@ export function sendMessagesToClient(socket: any, messages: ServerMessage[]): vo
 export async function handlePositionReport(
   client: ConnectedClient,
   payload: Extract<ClientMessage, { type: 'position_report' }>['payload'],
-  services: WebSocketServices
+  _services: WebSocketServices
 ): Promise<ServerMessage[]> {
   try {
-    const { position, accuracy, timestamp } = payload;
-    
+    const { position, accuracy } = payload;
+
     console.log(`[WS] Position report from ${client.id}: lat=${position.lat}, lng=${position.lng}, accuracy=${accuracy}m`);
-    
+
     // Update outdoor navigation session if exists
     if (client.sessionId && client.sessionId.startsWith('outdoor_')) {
       const session = outdoorNavigationSessions.get(client.sessionId);
@@ -707,11 +707,11 @@ export async function handlePositionReport(
         session.currentPosition = position;
       }
     }
-    
+
     // TODO: Calculate distance to next maneuver
     // TODO: Check if user has deviated from route
     // TODO: Send updated instruction if approaching turn
-    
+
     // For now, just acknowledge the position
     return [
       {
@@ -733,11 +733,11 @@ export async function handlePositionReport(
 export async function handleHeadingReport(
   client: ConnectedClient,
   payload: Extract<ClientMessage, { type: 'heading_report' }>['payload'],
-  services: WebSocketServices
+  _services: WebSocketServices
 ): Promise<ServerMessage[]> {
   try {
-    const { heading, timestamp } = payload;
-    
+    const { heading } = payload;
+
     // Update outdoor navigation session if exists
     if (client.sessionId && client.sessionId.startsWith('outdoor_')) {
       const session = outdoorNavigationSessions.get(client.sessionId);
@@ -745,11 +745,11 @@ export async function handleHeadingReport(
         session.heading = heading;
       }
     }
-    
+
     // The mobile app uses heading + targetBearing to show direction arrow
     // No response needed for heading updates, just log it
     console.log(`[WS] Heading report from ${client.id}: ${heading}°`);
-    
+
     // Return empty array - no response needed
     return [];
   } catch (error: any) {

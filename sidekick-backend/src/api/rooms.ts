@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import { prisma } from '../db/client';
+import { prisma } from '../db/client.js';
 
 /**
  * User type for authenticated requests
@@ -398,7 +398,7 @@ export default async function roomRoutes(fastify: FastifyInstance) {
             positionY: landmark.positionY,
             compassDirection: landmark.compassDirection,
           })),
-          referenceImages: room.referenceImages.map((image : any) => ({
+          referenceImages: room.referenceImages.map((image: any) => ({
             id: image.id,
             locationTag: image.locationTag,
             compassHeading: image.compassHeading,
@@ -733,8 +733,8 @@ export default async function roomRoutes(fastify: FastifyInstance) {
           }),
           reverseDoorway
             ? prisma.doorway.delete({
-                where: { id: reverseDoorway.id },
-              })
+              where: { id: reverseDoorway.id },
+            })
             : Promise.resolve(),
         ]);
 

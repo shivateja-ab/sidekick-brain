@@ -2,30 +2,30 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import jwt from '@fastify/jwt';
 import websocket from '@fastify/websocket';
-import { config } from './config';
+import { config } from './config.js';
 import dotenv from 'dotenv';
 dotenv.config();
-import { prisma, disconnectPrisma } from './db/client';
+import { prisma, disconnectPrisma } from './db/client.js';
 
 
 
 // Import services
-import { DirectionTranslator } from './services/DirectionTranslator';
-import { PositionTracker } from './services/PositionTracker';
-import { PathFinder } from './services/PathFinder';
-import { TriggerEvaluator } from './services/TriggerEvaluator';
-import { VisionClient } from './services/VisionClient';
-import { SpeechGenerator } from './services/SpeechGenerator';
-import { NavigationEngine } from './services/NavigationEngine';
-import { SessionManager } from './websocket/SessionManager';
+import { DirectionTranslator } from './services/DirectionTranslator.js';
+import { PositionTracker } from './services/PositionTracker.js';
+import { PathFinder } from './services/PathFinder.js';
+import { TriggerEvaluator } from './services/TriggerEvaluator.js';
+import { VisionClient } from './services/VisionClient.js';
+import { SpeechGenerator } from './services/SpeechGenerator.js';
+import { NavigationEngine } from './services/NavigationEngine.js';
+import { SessionManager } from './websocket/SessionManager.js';
 
 // Import route handlers
-import authRoutes from './api/auth';
-import flatRoutes from './api/flats';
-import roomRoutes from './api/rooms';
-import imageRoutes from './api/images';
-import navigateRoutes from './api/navigate';
-// import { registerWebSocketRoutes } from './websocket/handlers';
+import authRoutes from './api/auth.js';
+import flatRoutes from './api/flats.js';
+import roomRoutes from './api/rooms.js';
+import imageRoutes from './api/images.js';
+import navigateRoutes from './api/navigate.js';
+// import { registerWebSocketRoutes } from './websocket/handlers.js';
 
 /**
  * Create Fastify instance with logger
@@ -36,12 +36,12 @@ const fastify = Fastify({
     transport:
       config.NODE_ENV === 'development'
         ? {
-            target: 'pino-pretty',
-            options: {
-              translateTime: 'HH:MM:ss Z',
-              ignore: 'pid,hostname',
-            },
-          }
+          target: 'pino-pretty',
+          options: {
+            translateTime: 'HH:MM:ss Z',
+            ignore: 'pid,hostname',
+          },
+        }
         : undefined,
   },
 });
@@ -107,7 +107,7 @@ function initializeServices() {
   const positionTracker = new PositionTracker();
   const pathFinder = new PathFinder();
   const triggerEvaluator = new TriggerEvaluator();
-  
+
   let visionClient: VisionClient;
   try {
     visionClient = new VisionClient(config.VISION_API_URL || undefined);
@@ -118,7 +118,7 @@ function initializeServices() {
     // Create a dummy client that will fail gracefully
     throw error; // For now, we'll throw - user needs to set VISION_API_URL
   }
-  
+
   const speechGenerator = new SpeechGenerator();
   const navigationEngine = new NavigationEngine(
     prisma,
@@ -181,8 +181,8 @@ async function registerRoutes(services: ReturnType<typeof initializeServices>) {
  * Register WebSocket routes
  */
 async function registerWebSocket(services: ReturnType<typeof initializeServices>) {
-  const { registerWebSocket: registerWS } = await import('./websocket/index');
-  
+  const { registerWebSocket: registerWS } = await import('./websocket/index.js');
+
   await registerWS(fastify, {
     navigationEngine: services.navigationEngine,
     sessionManager: services.sessionManager,

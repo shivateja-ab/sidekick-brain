@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import { prisma } from '../db/client';
-import type { FlatMapOrigin } from '../models/FlatMap';
+import { prisma } from '../db/client.js';
+import type { FlatMapOrigin } from '../models/FlatMap.js';
 
 /**
  * User type for authenticated requests

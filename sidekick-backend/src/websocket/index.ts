@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
-import type { ConnectedClient } from './SessionManager';
-import type { ClientMessage, WebSocketServices } from './types';
-import { handleMessage, sendMessagesToClient } from './handlers';
+import type { ConnectedClient } from './SessionManager.js';
+import type { ClientMessage, WebSocketServices } from './types.js';
+import { handleMessage, sendMessagesToClient } from './handlers.js';
 
 /**
  * Register WebSocket routes
@@ -17,176 +17,176 @@ export async function registerWebSocket(
     '/ws',
     { websocket: true },
     (connection: any, request: any) => {
-        let client: ConnectedClient | null = null;
+      let client: ConnectedClient | null = null;
 
-        // Handle connection (WebSocket is already open at this point)
-        (async () => {
-          try {
-            // Extract token from query string
-            const token = request.query?.token || request.query?.t;
+      // Handle connection (WebSocket is already open at this point)
+      (async () => {
+        try {
+          // Extract token from query string
+          const token = request.query?.token || request.query?.t;
 
-            if (!token) {
-              console.log('[WS] Connection rejected: no token');
-              connection.send(
-                JSON.stringify({
-                  type: 'error',
-                  code: 'authentication_required',
-                  message: 'Authentication token required',
-                  speech: 'Please provide an authentication token.',
-                  recoverable: false,
-                })
-              );
-              connection.close(1008, 'Authentication required');
-              return;
-            }
-
-            // Verify JWT token
-            try {
-              const decoded = (fastify as any).jwt.verify(token) as { userId: string; email: string };
-
-              // Create client in SessionManager
-              client = {
-                id: '',
-                socket: connection,
-                userId: decoded.userId,
-                sessionId: null,
-                connectedAt: new Date(),
-                lastPingAt: new Date(),
-              };
-
-              const clientId = services.sessionManager.addClient(connection, decoded.userId);
-              client.id = clientId;
-
-              console.log(`[WS] Client connected: userId=${decoded.userId}, clientId=${clientId}`);
-
-              // Send connection confirmation (matching mobile app expectations)
-              connection.send(
-                JSON.stringify({
-                  type: 'connected',
-                  clientId: clientId,
-                  timestamp: Date.now(),
-                })
-              );
-            } catch (jwtError: any) {
-              console.log('[WS] Connection rejected: invalid token');
-              connection.send(
-                JSON.stringify({
-                  type: 'error',
-                  code: 'authentication_failed',
-                  message: 'Invalid or expired token',
-                  speech: 'Authentication failed. Please reconnect with a valid token.',
-                  recoverable: false,
-                })
-              );
-              connection.close(1008, 'Authentication failed');
-            }
-          } catch (error) {
-            console.error('[WS] Connection error:', error);
-              connection.close(1011, 'Internal server error');
-          }
-        })();
-
-        // Handle incoming messages
-        connection.on('message', async (message: Buffer) => {
-          try {
-            if (!client) {
-              connection.send(
-                JSON.stringify({
-                  type: 'error',
-                  code: 'not_authenticated',
-                  message: 'Not authenticated',
-                  speech: 'Please authenticate first.',
-                  recoverable: false,
-                })
-              );
-              return;
-            }
-
-            // Parse JSON message
-            let parsedMessage: ClientMessage;
-            try {
-              const messageStr = message.toString();
-              parsedMessage = JSON.parse(messageStr);
-            } catch (parseError) {
-              console.error('[WS] Invalid JSON message:', parseError);
-              connection.send(
-                JSON.stringify({
-                  type: 'error',
-                  code: 'invalid_message',
-                  message: 'Invalid JSON format',
-                  speech: 'Invalid message format.',
-                  recoverable: true,
-                })
-              );
-              return;
-            }
-
-            // Validate message has type
-            if (!parsedMessage.type) {
-              connection.send(
-                JSON.stringify({
-                  type: 'error',
-                  code: 'invalid_message',
-                  message: 'Message must have a type field',
-                  speech: 'Invalid message format.',
-                  recoverable: true,
-                })
-              );
-              return;
-            }
-
-            console.log(`[WS] Message received: type=${parsedMessage.type}, clientId=${client.id}`);
-
-            // Route to appropriate handler
-            const responseMessages = await handleMessage(client, parsedMessage, services);
-
-            // Send response messages
-            if (responseMessages && responseMessages.length > 0) {
-              sendMessagesToClient(connection, responseMessages);
-            }
-          } catch (error: any) {
-            console.error('[WS] Message handling error:', error);
+          if (!token) {
+            console.log('[WS] Connection rejected: no token');
             connection.send(
               JSON.stringify({
                 type: 'error',
-                code: 'handler_error',
-                message: error.message || 'Failed to process message',
-                speech: 'An error occurred processing your request.',
+                code: 'authentication_required',
+                message: 'Authentication token required',
+                speech: 'Please provide an authentication token.',
+                recoverable: false,
+              })
+            );
+            connection.close(1008, 'Authentication required');
+            return;
+          }
+
+          // Verify JWT token
+          try {
+            const decoded = (fastify as any).jwt.verify(token) as { userId: string; email: string };
+
+            // Create client in SessionManager
+            client = {
+              id: '',
+              socket: connection,
+              userId: decoded.userId,
+              sessionId: null,
+              connectedAt: new Date(),
+              lastPingAt: new Date(),
+            };
+
+            const clientId = services.sessionManager.addClient(connection, decoded.userId);
+            client.id = clientId;
+
+            console.log(`[WS] Client connected: userId=${decoded.userId}, clientId=${clientId}`);
+
+            // Send connection confirmation (matching mobile app expectations)
+            connection.send(
+              JSON.stringify({
+                type: 'connected',
+                clientId: clientId,
+                timestamp: Date.now(),
+              })
+            );
+          } catch (jwtError: any) {
+            console.log('[WS] Connection rejected: invalid token');
+            connection.send(
+              JSON.stringify({
+                type: 'error',
+                code: 'authentication_failed',
+                message: 'Invalid or expired token',
+                speech: 'Authentication failed. Please reconnect with a valid token.',
+                recoverable: false,
+              })
+            );
+            connection.close(1008, 'Authentication failed');
+          }
+        } catch (error) {
+          console.error('[WS] Connection error:', error);
+          connection.close(1011, 'Internal server error');
+        }
+      })();
+
+      // Handle incoming messages
+      connection.on('message', async (message: Buffer) => {
+        try {
+          if (!client) {
+            connection.send(
+              JSON.stringify({
+                type: 'error',
+                code: 'not_authenticated',
+                message: 'Not authenticated',
+                speech: 'Please authenticate first.',
+                recoverable: false,
+              })
+            );
+            return;
+          }
+
+          // Parse JSON message
+          let parsedMessage: ClientMessage;
+          try {
+            const messageStr = message.toString();
+            parsedMessage = JSON.parse(messageStr);
+          } catch (parseError) {
+            console.error('[WS] Invalid JSON message:', parseError);
+            connection.send(
+              JSON.stringify({
+                type: 'error',
+                code: 'invalid_message',
+                message: 'Invalid JSON format',
+                speech: 'Invalid message format.',
                 recoverable: true,
               })
             );
+            return;
           }
-        });
 
-        // Handle connection close
-        connection.on('close', (code: number, _reason: Buffer) => {
-          if (client) {
-            console.log(
-              `[WS] Client disconnected: userId=${client.userId}, clientId=${client.id}, code=${code}`
+          // Validate message has type
+          if (!parsedMessage.type) {
+            connection.send(
+              JSON.stringify({
+                type: 'error',
+                code: 'invalid_message',
+                message: 'Message must have a type field',
+                speech: 'Invalid message format.',
+                recoverable: true,
+              })
             );
-
-            // If active navigation session, pause it (don't delete)
-            if (client.sessionId) {
-              console.log(`[WS] Pausing navigation session: ${client.sessionId}`);
-              // Note: NavigationEngine will handle session cleanup on timeout
-              // We just remove the client from SessionManager
-            }
-
-            // Remove client from SessionManager
-            services.sessionManager.removeClient(client.id);
-          } else {
-            console.log(`[WS] Unauthenticated connection closed: code=${code}`);
+            return;
           }
-        });
 
-        // Handle connection error
-        connection.on('error', (error: Error) => {
-          console.error('[WS] Connection error:', error);
-          if (client) {
-            services.sessionManager.removeClient(client.id);
+          console.log(`[WS] Message received: type=${parsedMessage.type}, clientId=${client.id}`);
+
+          // Route to appropriate handler
+          const responseMessages = await handleMessage(client, parsedMessage, services);
+
+          // Send response messages
+          if (responseMessages && responseMessages.length > 0) {
+            sendMessagesToClient(connection, responseMessages);
           }
-        });
-      }
+        } catch (error: any) {
+          console.error('[WS] Message handling error:', error);
+          connection.send(
+            JSON.stringify({
+              type: 'error',
+              code: 'handler_error',
+              message: error.message || 'Failed to process message',
+              speech: 'An error occurred processing your request.',
+              recoverable: true,
+            })
+          );
+        }
+      });
+
+      // Handle connection close
+      connection.on('close', (code: number, _reason: Buffer) => {
+        if (client) {
+          console.log(
+            `[WS] Client disconnected: userId=${client.userId}, clientId=${client.id}, code=${code}`
+          );
+
+          // If active navigation session, pause it (don't delete)
+          if (client.sessionId) {
+            console.log(`[WS] Pausing navigation session: ${client.sessionId}`);
+            // Note: NavigationEngine will handle session cleanup on timeout
+            // We just remove the client from SessionManager
+          }
+
+          // Remove client from SessionManager
+          services.sessionManager.removeClient(client.id);
+        } else {
+          console.log(`[WS] Unauthenticated connection closed: code=${code}`);
+        }
+      });
+
+      // Handle connection error
+      connection.on('error', (error: Error) => {
+        console.error('[WS] Connection error:', error);
+        if (client) {
+          services.sessionManager.removeClient(client.id);
+        }
+      });
+    }
   );
 
   // Setup heartbeat/cleanup interval

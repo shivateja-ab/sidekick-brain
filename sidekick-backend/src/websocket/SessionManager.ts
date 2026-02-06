@@ -1,4 +1,4 @@
-import type { ServerMessage } from '../services/NavigationEngine';
+import type { ServerMessage } from '../services/NavigationEngine.js';
 
 /**
  * WebSocket connection type

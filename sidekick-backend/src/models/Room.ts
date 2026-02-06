@@ -1,4 +1,4 @@
-export type RoomType = 
+export type RoomType =
   | 'bedroom'
   | 'bathroom'
   | 'kitchen'
@@ -47,7 +47,7 @@ export interface UpdateRoomInput {
 }
 
 // Import types that will be defined in other files
-import type { FlatMap } from './FlatMap';
-import type { Doorway } from './Doorway';
-import type { Landmark } from './Landmark';
-import type { ReferenceImage } from './ReferenceImage';
+import type { FlatMap } from './FlatMap.js';
+import type { Doorway } from './Doorway.js';
+import type { Landmark } from './Landmark.js';
+import type { ReferenceImage } from './ReferenceImage.js';

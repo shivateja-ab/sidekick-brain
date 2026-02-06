@@ -1,4 +1,4 @@
-export type SessionStatus = 
+export type SessionStatus =
   | 'initializing'
   | 'confirming_start'
   | 'navigating'
@@ -9,7 +9,7 @@ export type SessionStatus =
   | 'cancelled'
   | 'failed';
 
-export type SegmentAction = 
+export type SegmentAction =
   | 'walk'
   | 'turn'
   | 'exit_room'
@@ -121,5 +121,5 @@ export interface UpdateNavigationSessionInput {
 }
 
 // Import types that will be defined in other files
-import type { User } from './User';
-import type { FlatMap } from './FlatMap';
+import type { User } from './User.js';
+import type { FlatMap } from './FlatMap.js';

@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import { prisma } from '../db/client';
-import type { SensorUpdatePayload, VisualResponsePayload } from '../services/NavigationEngine';
-import type { VisualTrigger } from '../services/TriggerEvaluator';
+import { prisma } from '../db/client.js';
+import type { SensorUpdatePayload, VisualResponsePayload } from '../services/NavigationEngine.js';
+import type { VisualTrigger } from '../services/TriggerEvaluator.js';
 
 /**
  * User type for authenticated requests

@@ -1,9 +1,8 @@
-import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import { prisma } from '../db/client';
-import { config } from '../config';
-import type { UserPreferences } from '../models/User';
+import { prisma } from '../db/client.js';
+import type { UserPreferences } from '../models/User.js';
 
 /**
  * Register request body schema
@@ -193,7 +192,7 @@ export default async function authRoutes(fastify: FastifyInstance) {
         token,
       });
     } catch (error) {
-        request.log.error({ err: error }, '[Auth] Registration error');
+      request.log.error({ err: error }, '[Auth] Registration error');
       return reply.code(500).send({
         error: 'internal_error',
         message: 'Failed to create user',
@@ -260,7 +259,7 @@ export default async function authRoutes(fastify: FastifyInstance) {
         token,
       });
     } catch (error) {
-        request.log.error({ err: error }, '[Auth] Login error');
+      request.log.error({ err: error }, '[Auth] Login error');
       return reply.code(500).send({
         error: 'internal_error',
         message: 'Failed to login',
@@ -295,7 +294,7 @@ export default async function authRoutes(fastify: FastifyInstance) {
           try {
             // Decode token to get payload (without verification)
             const decodedPayload = jwt.decode(token) as { userId: string; email: string; exp?: number } | null;
-            
+
             if (!decodedPayload || !decodedPayload.userId || !decodedPayload.email) {
               return reply.code(401).send({
                 error: 'unauthorized',
@@ -341,7 +340,7 @@ export default async function authRoutes(fastify: FastifyInstance) {
         token: newToken,
       });
     } catch (error) {
-        request.log.error({ err: error }, '[Auth] Token refresh error');
+      request.log.error({ err: error }, '[Auth] Token refresh error');
       return reply.code(500).send({
         error: 'internal_error',
         message: 'Failed to refresh token',
@@ -369,7 +368,7 @@ export default async function authRoutes(fastify: FastifyInstance) {
 
       try {
         const user = await prisma.user.findUnique({
-          where: { id: authUser.userId},
+          where: { id: authUser.userId },
           select: {
             id: true,
             email: true,

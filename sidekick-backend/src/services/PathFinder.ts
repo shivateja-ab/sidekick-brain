@@ -1,6 +1,6 @@
-import type { Room } from '../models/Room';
-import type { Doorway } from '../models/Doorway';
-import type { PathSegment, Checkpoint } from '../models/NavigationSession';
+import type { Room } from '../models/Room.js';
+import type { Doorway } from '../models/Doorway.js';
+import type { PathSegment, Checkpoint } from '../models/NavigationSession.js';
 
 /**
  * Graph node structure for pathfinding

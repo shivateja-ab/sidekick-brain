@@ -1,4 +1,4 @@
-import type { PathSegment } from '../models/NavigationSession';
+import type { PathSegment } from '../models/NavigationSession.js';
 
 /**
  * Reason for requesting visual confirmation

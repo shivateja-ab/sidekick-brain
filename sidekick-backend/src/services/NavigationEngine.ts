@@ -2,12 +2,12 @@ import type { PrismaClient } from '@prisma/client';
 import type {
   NavigationSessionRuntime,
   PathSegment,
-} from '../models/NavigationSession';
-import type { Doorway } from '../models/Doorway';
-import { PathFinder } from './PathFinder';
-import { PositionTracker } from './PositionTracker';
-import { DirectionTranslator } from './DirectionTranslator';
-import { TriggerEvaluator, type VisualTrigger } from './TriggerEvaluator';
+} from '../models/NavigationSession.js';
+import type { Doorway } from '../models/Doorway.js';
+import { PathFinder } from './PathFinder.js';
+import { PositionTracker } from './PositionTracker.js';
+import { DirectionTranslator } from './DirectionTranslator.js';
+import { TriggerEvaluator, type VisualTrigger } from './TriggerEvaluator.js';
 
 /**
  * VisionClient interface - handles calls to Vision API
@@ -48,7 +48,7 @@ export interface SensorUpdatePayload {
   stepsSinceLastUpdate?: number;
   totalStepsInSegment?: number;
   compassHeading?: number;
-  
+
   // New batch-based fields
   currentHeading: number;       // Current compass heading
   stepBatches?: StepBatch[];     // Array of step batches with headings
@@ -71,110 +71,110 @@ export interface VisualResponsePayload {
  */
 export type ServerMessage =
   | {
-      type: 'connection_established';
-      payload: {
-        userId: string;
-        clientId: string;
-      };
-    }
-  | {
-      type: 'connected';
+    type: 'connection_established';
+    payload: {
+      userId: string;
       clientId: string;
-      timestamp: number;
-    }
-  | {
-      type: 'navigation_started';
-      sessionId: string;
-      path: PathSegment[];
-      firstInstruction: string;
-      totalSteps: number;
-      estimatedSeconds: number;
-    }
-  | {
-      type: 'instruction';
-      speech: string;
-      priority: 'high' | 'normal' | 'low';
-      currentSegmentIndex: number;
-      stepsRemaining: number;
-      nextAction?: string;
-      confidence: number;
-      // Outdoor navigation fields
-      text?: string;
-      distance?: number;
-      maneuver?: string;
-      targetBearing?: number;
-      stepIndex?: number;
-      totalSteps?: number;
-    }
-  | {
-      type: 'request_visual';
-      trigger: VisualTrigger;
-    }
-  | {
-      type: 'visual_result';
-      success: boolean;
-      isOnTrack?: boolean;
-      confidence?: number;
-      speech: string;
-      action: 'continue' | 'recalculate' | 'retry';
-    }
-  | {
-      type: 'position_update';
-      confidence: number;
-      currentRoom: string;
-    }
-  | {
-      type: 'position_ack';
-      timestamp: number;
-    }
-  | {
-      type: 'route_update';
-      totalDistance: number; // meters
-      estimatedTime: number; // seconds
-      steps: Array<{
-        instruction: string;
-        distance: number;
-        maneuver: string;
-        bearing: number;
-      }>;
-    }
-  | {
-      type: 'hazard_warning';
-      hazardType: string; // 'obstacle', 'construction', 'traffic', etc.
-      severity: 'low' | 'medium' | 'high';
-      distance: number;
-      description: string;
-      timestamp: number;
-    }
-  | {
-      type: 'arrival';
-      message: string;
-      timestamp: number;
-    }
-  | {
-      type: 'pong';
-      timestamp: number;
-    }
-  | {
-      type: 'recalculating';
-      reason: string;
-      speech: string;
-    }
-  | {
-      type: 'navigation_complete';
-      speech: string;
-    }
-  | {
-      type: 'navigation_cancelled';
-      speech: string;
-    }
-  | {
-      type: 'error';
-      code: string;
-      message: string;
-      speech: string;
-      recoverable: boolean;
     };
+  }
+  | {
+    type: 'connected';
+    clientId: string;
+    timestamp: number;
+  }
+  | {
+    type: 'navigation_started';
+    sessionId: string;
+    path: PathSegment[];
+    firstInstruction: string;
+    totalSteps: number;
+    estimatedSeconds: number;
+  }
+  | {
+    type: 'instruction';
+    speech: string;
+    priority: 'high' | 'normal' | 'low';
+    currentSegmentIndex: number;
+    stepsRemaining: number;
+    nextAction?: string;
+    confidence: number;
+    // Outdoor navigation fields
+    text?: string;
+    distance?: number;
+    maneuver?: string;
+    targetBearing?: number;
+    stepIndex?: number;
+    totalSteps?: number;
+  }
+  | {
+    type: 'request_visual';
+    trigger: VisualTrigger;
+  }
+  | {
+    type: 'visual_result';
+    success: boolean;
+    isOnTrack?: boolean;
+    confidence?: number;
+    speech: string;
+    action: 'continue' | 'recalculate' | 'retry';
+  }
+  | {
+    type: 'position_update';
+    confidence: number;
+    currentRoom: string;
+  }
+  | {
+    type: 'position_ack';
+    timestamp: number;
+  }
+  | {
+    type: 'route_update';
+    totalDistance: number; // meters
+    estimatedTime: number; // seconds
+    steps: Array<{
+      instruction: string;
+      distance: number;
+      maneuver: string;
+      bearing: number;
+    }>;
+  }
+  | {
+    type: 'hazard_warning';
+    hazardType: string; // 'obstacle', 'construction', 'traffic', etc.
+    severity: 'low' | 'medium' | 'high';
+    distance: number;
+    description: string;
+    timestamp: number;
+  }
+  | {
+    type: 'arrival';
+    message: string;
+    timestamp: number;
+  }
+  | {
+    type: 'pong';
+    timestamp: number;
+  }
+  | {
+    type: 'recalculating';
+    reason: string;
+    speech: string;
+  }
+  | {
+    type: 'navigation_complete';
+    speech: string;
+  }
+  | {
+    type: 'navigation_cancelled';
+    speech: string;
+  }
+  | {
+    type: 'error';
+    code: string;
+    message: string;
+    speech: string;
+    recoverable: boolean;
+  };
 
 /**
  * NavigationEngine Service
@@ -202,7 +202,7 @@ export class NavigationEngine {
     private directionTranslator: DirectionTranslator,
     private triggerEvaluator: TriggerEvaluator,
     private visionClient: VisionClient
-  ) {}
+  ) { }
 
   /**
    * Starts a new navigation session
@@ -269,7 +269,7 @@ export class NavigationEngine {
 
       // Calculate path
       console.log(`[NavigationEngine] Calculating path from ${startRoomId} to ${destinationRoomId}`);
-      
+
       // Collect all doorways (both directions)
       const allDoorways: Doorway[] = [];
       for (const room of flatMap.rooms) {
@@ -451,7 +451,7 @@ export class NavigationEngine {
         payload.stepsSinceLastUpdate,
         payload.compassHeading || currentHeading
       );
-      
+
       // Update steps taken in segment
       if (payload.totalStepsInSegment !== undefined) {
         session.stepsTakenInSegment = payload.totalStepsInSegment;
@@ -563,11 +563,11 @@ export class NavigationEngine {
     // For indoor navigation, we use the target room's position
     // This is a simplified check - in practice, you'd get the target room position
     // For now, we'll check if we're moving in the general direction of the segment heading
-    
+
     // Get the expected direction from the segment
     const expectedHeading = currentSegment.compassHeading;
     const currentHeading = session.currentCompassHeading;
-    
+
     // Calculate heading difference (0-180 degrees)
     let headingDiff = Math.abs(currentHeading - expectedHeading);
     if (headingDiff > 180) {
