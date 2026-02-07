@@ -30,10 +30,14 @@ export async function registerWebSocket(
             connection.send(
               JSON.stringify({
                 type: 'error',
-                code: 'authentication_required',
-                message: 'Authentication token required',
-                speech: 'Please provide an authentication token.',
-                recoverable: false,
+                sessionId: undefined,
+                timestamp: Date.now(),
+                payload: {
+                  code: 'authentication_required',
+                  message: 'Authentication token required',
+                  speech: 'Please provide an authentication token.',
+                  recoverable: false,
+                },
               })
             );
             connection.close(1008, 'Authentication required');
@@ -63,8 +67,12 @@ export async function registerWebSocket(
             connection.send(
               JSON.stringify({
                 type: 'connected',
-                clientId: clientId,
+                sessionId: undefined,
                 timestamp: Date.now(),
+                payload: {
+                  clientId: clientId,
+                  timestamp: Date.now(),
+                },
               })
             );
           } catch (jwtError: any) {
@@ -72,10 +80,14 @@ export async function registerWebSocket(
             connection.send(
               JSON.stringify({
                 type: 'error',
-                code: 'authentication_failed',
-                message: 'Invalid or expired token',
-                speech: 'Authentication failed. Please reconnect with a valid token.',
-                recoverable: false,
+                sessionId: undefined,
+                timestamp: Date.now(),
+                payload: {
+                  code: 'authentication_failed',
+                  message: 'Invalid or expired token',
+                  speech: 'Authentication failed. Please reconnect with a valid token.',
+                  recoverable: false,
+                },
               })
             );
             connection.close(1008, 'Authentication failed');
@@ -93,10 +105,14 @@ export async function registerWebSocket(
             connection.send(
               JSON.stringify({
                 type: 'error',
-                code: 'not_authenticated',
-                message: 'Not authenticated',
-                speech: 'Please authenticate first.',
-                recoverable: false,
+                sessionId: undefined,
+                timestamp: Date.now(),
+                payload: {
+                  code: 'not_authenticated',
+                  message: 'Not authenticated',
+                  speech: 'Please authenticate first.',
+                  recoverable: false,
+                },
               })
             );
             return;
@@ -112,10 +128,14 @@ export async function registerWebSocket(
             connection.send(
               JSON.stringify({
                 type: 'error',
-                code: 'invalid_message',
-                message: 'Invalid JSON format',
-                speech: 'Invalid message format.',
-                recoverable: true,
+                sessionId: undefined,
+                timestamp: Date.now(),
+                payload: {
+                  code: 'invalid_message',
+                  message: 'Invalid JSON format',
+                  speech: 'Invalid message format.',
+                  recoverable: true,
+                },
               })
             );
             return;
@@ -126,10 +146,14 @@ export async function registerWebSocket(
             connection.send(
               JSON.stringify({
                 type: 'error',
-                code: 'invalid_message',
-                message: 'Message must have a type field',
-                speech: 'Invalid message format.',
-                recoverable: true,
+                sessionId: undefined,
+                timestamp: Date.now(),
+                payload: {
+                  code: 'invalid_message',
+                  message: 'Message must have a type field',
+                  speech: 'Invalid message format.',
+                  recoverable: true,
+                },
               })
             );
             return;
@@ -149,10 +173,14 @@ export async function registerWebSocket(
           connection.send(
             JSON.stringify({
               type: 'error',
-              code: 'handler_error',
-              message: error.message || 'Failed to process message',
-              speech: 'An error occurred processing your request.',
-              recoverable: true,
+              sessionId: client?.sessionId || undefined,
+              timestamp: Date.now(),
+              payload: {
+                code: 'handler_error',
+                message: error.message || 'Failed to process message',
+                speech: 'An error occurred processing your request.',
+                recoverable: true,
+              },
             })
           );
         }

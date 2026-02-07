@@ -15,7 +15,13 @@ function sendToClient(socket: any, message: ServerMessage): void {
   try {
     if (socket.readyState === 1) {
       // WebSocket.OPEN = 1
-      socket.send(JSON.stringify(message));
+      const messageStr = JSON.stringify(message);
+      console.log(`[WS] Outgoing: type=${message.type}, sessionId=${message.sessionId || 'none'}`);
+      // Only log payload for navigation-related messages or errors
+      if (message.type === 'navigation_started' || message.type === 'instruction' || message.type === 'error') {
+        console.log(`[WS] Payload: ${JSON.stringify(message.payload)}`);
+      }
+      socket.send(messageStr);
     }
   } catch (error) {
     console.error('[WS] Error sending message:', error);
@@ -44,10 +50,14 @@ function createErrorMessage(
 ): ServerMessage {
   return {
     type: 'error',
-    code,
-    message,
-    speech: message,
-    recoverable,
+    payload: {
+      code,
+      message,
+      speech: message,
+      recoverable,
+    },
+    sessionId: '', // Root-level for compatibility
+    timestamp: Date.now(),
   };
 }
 
@@ -149,57 +159,66 @@ async function handleOutdoorNavigation(
   // For now, send mock route data
   const mockRoute: ServerMessage = {
     type: 'route_update',
-    totalDistance: 1250, // meters
-    estimatedTime: 900, // seconds (15 min)
-    steps: [
-      {
-        instruction: 'Head north on Main Street',
-        distance: 200,
-        maneuver: 'straight',
-        bearing: 0,
-      },
-      {
-        instruction: 'Turn right onto Oak Avenue',
-        distance: 350,
-        maneuver: 'turn-right',
-        bearing: 90,
-      },
-      {
-        instruction: 'Continue straight for 400 meters',
-        distance: 400,
-        maneuver: 'straight',
-        bearing: 90,
-      },
-      {
-        instruction: 'Turn left onto Pine Road',
-        distance: 200,
-        maneuver: 'turn-left',
-        bearing: 0,
-      },
-      {
-        instruction: 'Your destination is on the right',
-        distance: 100,
-        maneuver: 'arrive',
-        bearing: 0,
-      },
-    ],
+    sessionId: `outdoor_${Date.now()}_${client.id}`,
+    timestamp: Date.now(),
+    payload: {
+      totalDistance: 1250, // meters
+      estimatedTime: 900, // seconds (15 min)
+      steps: [
+        {
+          instruction: 'Head north on Main Street',
+          distance: 200,
+          maneuver: 'straight',
+          bearing: 0,
+        },
+        {
+          instruction: 'Turn right onto Oak Avenue',
+          distance: 350,
+          maneuver: 'turn-right',
+          bearing: 90,
+        },
+        {
+          instruction: 'Continue straight for 400 meters',
+          distance: 400,
+          maneuver: 'straight',
+          bearing: 90,
+        },
+        {
+          instruction: 'Turn left onto Pine Road',
+          distance: 200,
+          maneuver: 'turn-left',
+          bearing: 0,
+        },
+        {
+          instruction: 'Your destination is on the right',
+          distance: 100,
+          maneuver: 'arrive',
+          bearing: 0,
+        },
+      ],
+    },
   };
 
   const firstInstruction: ServerMessage = {
     type: 'instruction',
-    text: mockRoute.steps[0].instruction,
-    speech: mockRoute.steps[0].instruction,
-    distance: mockRoute.steps[0].distance,
-    maneuver: mockRoute.steps[0].maneuver,
-    targetBearing: mockRoute.steps[0].bearing,
-    stepIndex: 0,
-    totalSteps: mockRoute.steps.length,
-    priority: 'normal',
-    currentSegmentIndex: 0,
-    stepsRemaining: mockRoute.totalDistance,
-    confidence: 1.0,
+    sessionId: mockRoute.sessionId,
+    timestamp: Date.now(),
+    payload: {
+      text: mockRoute.payload.steps[0].instruction,
+      speech: mockRoute.payload.steps[0].instruction,
+      distance: mockRoute.payload.steps[0].distance,
+      maneuver: mockRoute.payload.steps[0].maneuver,
+      targetBearing: mockRoute.payload.steps[0].bearing,
+      stepIndex: 0,
+      totalSteps: mockRoute.payload.steps.length,
+      priority: 'normal',
+      currentSegmentIndex: 0,
+      stepsRemaining: mockRoute.payload.totalDistance,
+      confidence: 1.0,
+    },
   };
 
+  console.log(`[WS] Outdoor route generated: ${mockRoute.sessionId}`);
   return [mockRoute, firstInstruction];
 }
 
@@ -303,11 +322,13 @@ export async function handleVisualSkipped(
     return [
       {
         type: 'instruction',
-        speech: 'Continuing navigation. If you need help, just ask.',
-        priority: 'normal',
-        currentSegmentIndex: session.currentSegmentIndex,
-        stepsRemaining: 0,
-        confidence: session.confidence,
+        payload: {
+          speech: 'Continuing navigation. If you need help, just ask.',
+          priority: 'normal',
+          currentSegmentIndex: session.currentSegmentIndex,
+          stepsRemaining: 0,
+          confidence: session.confidence,
+        },
       },
     ];
   } catch (error: any) {
@@ -356,7 +377,9 @@ export async function handleVoiceCommand(
       return [
         {
           type: 'request_visual',
-          trigger,
+          payload: {
+            trigger,
+          },
         },
       ];
     }
@@ -382,7 +405,9 @@ export async function handleVoiceCommand(
       return [
         {
           type: 'request_visual',
-          trigger,
+          payload: {
+            trigger,
+          },
         },
       ];
     }
@@ -407,11 +432,13 @@ export async function handleVoiceCommand(
     return [
       {
         type: 'instruction',
-        speech: "I didn't understand that. Try saying 'where am I', 'pause', 'cancel', or 'repeat'.",
-        priority: 'normal',
-        currentSegmentIndex: 0,
-        stepsRemaining: 0,
-        confidence: 1.0,
+        payload: {
+          speech: "I didn't understand that. Try saying 'where am I', 'pause', 'cancel', or 'repeat'.",
+          priority: 'normal',
+          currentSegmentIndex: 0,
+          stepsRemaining: 0,
+          confidence: 1.0,
+        },
       },
     ];
   } catch (error: any) {
@@ -507,7 +534,9 @@ export async function handleCancel(
     return [
       {
         type: 'navigation_cancelled',
-        speech: 'Navigation cancelled',
+        payload: {
+          speech: 'Navigation cancelled',
+        },
       },
     ];
   } catch (error: any) {
@@ -548,11 +577,13 @@ export async function handleRepeat(
       return [
         {
           type: 'instruction',
-          speech: 'No current instruction available.',
-          priority: 'normal',
-          currentSegmentIndex: session.currentSegmentIndex,
-          stepsRemaining: 0,
-          confidence: session.confidence,
+          payload: {
+            speech: 'No current instruction available.',
+            priority: 'normal',
+            currentSegmentIndex: session.currentSegmentIndex,
+            stepsRemaining: 0,
+            confidence: session.confidence,
+          },
         },
       ];
     }
@@ -570,11 +601,13 @@ export async function handleRepeat(
     return [
       {
         type: 'instruction',
-        speech: instruction,
-        priority: 'normal',
-        currentSegmentIndex: session.currentSegmentIndex,
-        stepsRemaining: Math.max(0, currentSegment.distanceSteps - session.stepsTakenInSegment),
-        confidence: session.confidence,
+        payload: {
+          speech: instruction,
+          priority: 'normal',
+          currentSegmentIndex: session.currentSegmentIndex,
+          stepsRemaining: Math.max(0, currentSegment.distanceSteps - session.stepsTakenInSegment),
+          confidence: session.confidence,
+        },
       },
     ];
   } catch (error: any) {
@@ -599,7 +632,9 @@ export async function handlePing(
   return [
     {
       type: 'pong',
-      timestamp: Date.now(),
+      payload: {
+        timestamp: Date.now(),
+      },
     },
   ];
 }
@@ -716,7 +751,9 @@ export async function handlePositionReport(
     return [
       {
         type: 'position_ack',
-        timestamp: Date.now(),
+        payload: {
+          timestamp: Date.now(),
+        },
       },
     ];
   } catch (error: any) {

@@ -69,112 +69,146 @@ export interface VisualResponsePayload {
 /**
  * Server message types sent to client via WebSocket
  */
-export type ServerMessage =
-  | {
-    type: 'connection_established';
-    payload: {
-      userId: string;
-      clientId: string;
-    };
-  }
-  | {
-    type: 'connected';
-    clientId: string;
-    timestamp: number;
-  }
-  | {
-    type: 'navigation_started';
-    sessionId: string;
-    path: PathSegment[];
-    firstInstruction: string;
-    totalSteps: number;
-    estimatedSeconds: number;
-  }
-  | {
-    type: 'instruction';
-    speech: string;
-    priority: 'high' | 'normal' | 'low';
-    currentSegmentIndex: number;
-    stepsRemaining: number;
-    nextAction?: string;
-    confidence: number;
-    // Outdoor navigation fields
-    text?: string;
-    distance?: number;
-    maneuver?: string;
-    targetBearing?: number;
-    stepIndex?: number;
-    totalSteps?: number;
-  }
-  | {
-    type: 'request_visual';
-    trigger: VisualTrigger;
-  }
-  | {
-    type: 'visual_result';
-    success: boolean;
-    isOnTrack?: boolean;
-    confidence?: number;
-    speech: string;
-    action: 'continue' | 'recalculate' | 'retry';
-  }
-  | {
-    type: 'position_update';
-    confidence: number;
-    currentRoom: string;
-  }
-  | {
-    type: 'position_ack';
-    timestamp: number;
-  }
-  | {
-    type: 'route_update';
-    totalDistance: number; // meters
-    estimatedTime: number; // seconds
-    steps: Array<{
-      instruction: string;
-      distance: number;
-      maneuver: string;
-      bearing: number;
-    }>;
-  }
-  | {
-    type: 'hazard_warning';
-    hazardType: string; // 'obstacle', 'construction', 'traffic', etc.
-    severity: 'low' | 'medium' | 'high';
-    distance: number;
-    description: string;
-    timestamp: number;
-  }
-  | {
-    type: 'arrival';
-    message: string;
-    timestamp: number;
-  }
-  | {
-    type: 'pong';
-    timestamp: number;
-  }
-  | {
-    type: 'recalculating';
-    reason: string;
-    speech: string;
-  }
-  | {
-    type: 'navigation_complete';
-    speech: string;
-  }
-  | {
-    type: 'navigation_cancelled';
-    speech: string;
-  }
-  | {
-    type: 'error';
-    code: string;
-    message: string;
-    speech: string;
-    recoverable: boolean;
-  };
+export type ServerMessage = {
+  sessionId?: string;
+  timestamp?: number;
+} & (
+    | {
+      type: 'connection_established';
+      payload: {
+        userId: string;
+        clientId: string;
+      };
+    }
+    | {
+      type: 'connected';
+      payload: {
+        clientId: string;
+        timestamp: number;
+      };
+    }
+    | {
+      type: 'navigation_started';
+      payload: {
+        sessionId: string;
+        path: PathSegment[];
+        firstInstruction: string;
+        totalSteps: number;
+        estimatedSeconds: number;
+      };
+    }
+    | {
+      type: 'instruction';
+      payload: {
+        speech: string;
+        priority: 'high' | 'normal' | 'low';
+        currentSegmentIndex: number;
+        stepsRemaining: number;
+        nextAction?: string;
+        confidence: number;
+        // Outdoor navigation fields
+        text?: string;
+        distance?: number;
+        maneuver?: string;
+        targetBearing?: number;
+        stepIndex?: number;
+        totalSteps?: number;
+      };
+    }
+    | {
+      type: 'request_visual';
+      payload: {
+        trigger: VisualTrigger;
+      };
+    }
+    | {
+      type: 'visual_result';
+      payload: {
+        success: boolean;
+        isOnTrack?: boolean;
+        confidence?: number;
+        speech: string;
+        action: 'continue' | 'recalculate' | 'retry';
+      };
+    }
+    | {
+      type: 'position_update';
+      payload: {
+        confidence: number;
+        currentRoom: string;
+      };
+    }
+    | {
+      type: 'position_ack';
+      payload: {
+        timestamp: number;
+      };
+    }
+    | {
+      type: 'route_update';
+      payload: {
+        totalDistance: number; // meters
+        estimatedTime: number; // seconds
+        steps: Array<{
+          instruction: string;
+          distance: number;
+          maneuver: string;
+          bearing: number;
+        }>;
+      };
+    }
+    | {
+      type: 'hazard_warning';
+      payload: {
+        hazardType: string; // 'obstacle', 'construction', 'traffic', etc.
+        severity: 'low' | 'medium' | 'high';
+        distance: number;
+        description: string;
+        timestamp: number;
+      };
+    }
+    | {
+      type: 'arrival';
+      payload: {
+        message: string;
+        timestamp: number;
+      };
+    }
+    | {
+      type: 'pong';
+      payload: {
+        timestamp: number;
+      };
+    }
+    | {
+      type: 'recalculating';
+      payload: {
+        reason: string;
+        speech: string;
+      };
+    }
+    | {
+      type: 'navigation_complete';
+      payload: {
+        speech: string;
+      };
+    }
+    | {
+      type: 'navigation_cancelled';
+      payload: {
+        speech: string;
+      };
+    }
+    | {
+      type: 'error';
+      payload: {
+        code: string;
+        message: string;
+        speech: string;
+        recoverable: boolean;
+      };
+    }
+  );
 
 /**
  * NavigationEngine Service
@@ -351,10 +385,14 @@ export class NavigationEngine {
         {
           type: 'navigation_started',
           sessionId: session.id,
-          path,
-          firstInstruction,
-          totalSteps,
-          estimatedSeconds,
+          timestamp: Date.now(),
+          payload: {
+            sessionId: session.id,
+            path,
+            firstInstruction,
+            totalSteps,
+            estimatedSeconds,
+          },
         },
       ];
 
@@ -362,7 +400,9 @@ export class NavigationEngine {
       const startTrigger = this.triggerEvaluator.createStartTrigger(session);
       messages.push({
         type: 'request_visual',
-        trigger: startTrigger,
+        payload: {
+          trigger: startTrigger,
+        },
       });
 
       console.log(
@@ -505,7 +545,9 @@ export class NavigationEngine {
       session.status = 'awaiting_visual';
       messages.push({
         type: 'request_visual',
-        trigger: visualTrigger,
+        payload: {
+          trigger: visualTrigger,
+        },
       });
       console.log(
         `[NavigationEngine] Visual trigger: ${visualTrigger.reason} (priority: ${visualTrigger.priority})`
@@ -520,12 +562,14 @@ export class NavigationEngine {
 
         messages.push({
           type: 'instruction',
-          speech: instruction,
-          priority: 'normal',
-          currentSegmentIndex: session.currentSegmentIndex,
-          stepsRemaining,
-          nextAction: nextSegment?.action,
-          confidence: session.confidence,
+          payload: {
+            speech: instruction,
+            priority: 'normal',
+            currentSegmentIndex: session.currentSegmentIndex,
+            stepsRemaining,
+            nextAction: nextSegment?.action,
+            confidence: session.confidence,
+          },
         });
       }
     }
@@ -533,8 +577,10 @@ export class NavigationEngine {
     // Send position update
     messages.push({
       type: 'position_update',
-      confidence: session.confidence,
-      currentRoom: session.currentRoomId,
+      payload: {
+        confidence: session.confidence,
+        currentRoom: session.currentRoomId,
+      },
     });
 
     // Persist session
@@ -689,11 +735,13 @@ export class NavigationEngine {
 
         messages.push({
           type: 'visual_result',
-          success: true,
-          isOnTrack: true,
-          confidence: session.confidence,
-          speech: visionResult.message || 'Position confirmed. Continue.',
-          action: 'continue',
+          payload: {
+            success: true,
+            isOnTrack: true,
+            confidence: session.confidence,
+            speech: visionResult.message || 'Position confirmed. Continue.',
+            action: 'continue',
+          },
         });
 
         if (instruction) {
@@ -703,11 +751,13 @@ export class NavigationEngine {
           );
           messages.push({
             type: 'instruction',
-            speech: instruction,
-            priority: 'normal',
-            currentSegmentIndex: session.currentSegmentIndex,
-            stepsRemaining,
-            confidence: session.confidence,
+            payload: {
+              speech: instruction,
+              priority: 'normal',
+              currentSegmentIndex: session.currentSegmentIndex,
+              stepsRemaining,
+              confidence: session.confidence,
+            },
           });
         }
       } else if (visionResult.success && !visionResult.isOnTrack) {
@@ -718,17 +768,21 @@ export class NavigationEngine {
 
         messages.push({
           type: 'visual_result',
-          success: true,
-          isOnTrack: false,
-          confidence: session.confidence,
-          speech: visionResult.message || "I'm not sure where you are. Let me recalculate.",
-          action: 'recalculate',
+          payload: {
+            success: true,
+            isOnTrack: false,
+            confidence: session.confidence,
+            speech: visionResult.message || "I'm not sure where you are. Let me recalculate.",
+            action: 'recalculate',
+          },
         });
 
         messages.push({
           type: 'recalculating',
-          reason: 'off_course',
-          speech: "I'm recalculating your route. Please wait.",
+          payload: {
+            reason: 'off_course',
+            speech: "I'm recalculating your route. Please wait.",
+          },
         });
 
         // TODO: Attempt to identify room and recalculate path
@@ -737,18 +791,22 @@ export class NavigationEngine {
         console.log(`[NavigationEngine] Vision API failed, requesting retry`);
         messages.push({
           type: 'visual_result',
-          success: false,
-          speech: visionResult.message || 'Could not process image. Please try again.',
-          action: 'retry',
+          payload: {
+            success: false,
+            speech: visionResult.message || 'Could not process image. Please try again.',
+            action: 'retry',
+          },
         });
       }
     } catch (error) {
       console.error(`[NavigationEngine] Vision API error:`, error);
       messages.push({
         type: 'visual_result',
-        success: false,
-        speech: 'Error processing image. Please try again.',
-        action: 'retry',
+        payload: {
+          success: false,
+          speech: 'Error processing image. Please try again.',
+          action: 'retry',
+        },
       });
     }
 
@@ -787,7 +845,9 @@ export class NavigationEngine {
     return [
       {
         type: 'navigation_cancelled',
-        speech: 'Navigation cancelled.',
+        payload: {
+          speech: 'Navigation cancelled.',
+        },
       },
     ];
   }
@@ -818,11 +878,13 @@ export class NavigationEngine {
     return [
       {
         type: 'instruction',
-        speech: 'Navigation paused.',
-        priority: 'normal',
-        currentSegmentIndex: session.currentSegmentIndex,
-        stepsRemaining: 0,
-        confidence: session.confidence,
+        payload: {
+          speech: 'Navigation paused.',
+          priority: 'normal',
+          currentSegmentIndex: session.currentSegmentIndex,
+          stepsRemaining: 0,
+          confidence: session.confidence,
+        },
       },
     ];
   }
@@ -865,11 +927,13 @@ export class NavigationEngine {
     return [
       {
         type: 'instruction',
-        speech: instruction || 'Navigation resumed. Continue forward.',
-        priority: 'normal',
-        currentSegmentIndex: session.currentSegmentIndex,
-        stepsRemaining,
-        confidence: session.confidence,
+        payload: {
+          speech: instruction || 'Navigation resumed. Continue forward.',
+          priority: 'normal',
+          currentSegmentIndex: session.currentSegmentIndex,
+          stepsRemaining,
+          confidence: session.confidence,
+        },
       },
     ];
   }
@@ -970,7 +1034,9 @@ export class NavigationEngine {
       return [
         {
           type: 'navigation_complete',
-          speech: 'You have reached your destination.',
+          payload: {
+            speech: 'You have reached your destination.',
+          },
         },
       ];
     }
@@ -1064,11 +1130,13 @@ export class NavigationEngine {
 
         return {
           type: 'instruction',
-          speech: checkpoint.message,
-          priority: checkpoint.type === 'confirm' ? 'high' : 'normal',
-          currentSegmentIndex: session.currentSegmentIndex,
-          stepsRemaining,
-          confidence: session.confidence,
+          payload: {
+            speech: checkpoint.message,
+            priority: checkpoint.type === 'confirm' ? 'high' : 'normal',
+            currentSegmentIndex: session.currentSegmentIndex,
+            stepsRemaining,
+            confidence: session.confidence,
+          },
         };
       }
     }
@@ -1119,16 +1187,20 @@ export class NavigationEngine {
    * @returns Error message object
    */
   private createErrorMessage(
-    _sessionId: string,
+    sessionId: string,
     message: string,
     recoverable: boolean
   ): ServerMessage {
     return {
       type: 'error',
-      code: 'NAVIGATION_ERROR',
-      message,
-      speech: message,
-      recoverable,
+      sessionId,
+      timestamp: Date.now(),
+      payload: {
+        code: 'NAVIGATION_ERROR',
+        message,
+        speech: message,
+        recoverable,
+      },
     };
   }
 
