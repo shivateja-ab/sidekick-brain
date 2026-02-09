@@ -1,6 +1,7 @@
 import type { ConnectedClient } from './SessionManager.js';
 import type { ClientMessage, WebSocketServices } from './types.js';
 import { ServerMessage } from '../services/NavigationEngine.js';
+import { logger } from '../utils/logger.js';
 import type { NavigationEngine } from '../services/NavigationEngine.js';
 import type { SessionManager } from './SessionManager.js';
 import type { TriggerEvaluator } from '../services/TriggerEvaluator.js';
@@ -14,17 +15,12 @@ import type { TriggerEvaluator } from '../services/TriggerEvaluator.js';
 function sendToClient(socket: any, message: ServerMessage): void {
   try {
     if (socket.readyState === 1) {
-      // WebSocket.OPEN = 1
       const messageStr = JSON.stringify(message);
-      console.log(`[WS] Outgoing: type=${message.type}, sessionId=${message.sessionId || 'none'}`);
-      // Only log payload for navigation-related messages or errors
-      if (message.type === 'navigation_started' || message.type === 'instruction' || message.type === 'error') {
-        console.log(`[WS] Payload: ${JSON.stringify(message.payload)}`);
-      }
+      logger.log(`[WS] SENDING: ${messageStr}`);
       socket.send(messageStr);
     }
-  } catch (error) {
-    console.error('[WS] Error sending message:', error);
+  } catch (error: any) {
+    logger.error('[WS] Error sending message:', error.message, error.stack);
   }
 }
 
@@ -103,11 +99,11 @@ export async function handleStartNavigation(
     // Store active session
     sessionManager.setActiveSession(client.id, session.id);
 
-    console.log(`[WS] Navigation started: sessionId=${session.id}, clientId=${client.id}`);
+    logger.log(`[WS] Navigation started: sessionId=${session.id}, clientId=${client.id}`);
 
     return messages;
   } catch (error: any) {
-    console.error('[WS] Start navigation error:', error);
+    logger.error('[WS] Start navigation error:', error.message, error.stack);
     return [
       createErrorMessage(
         'navigation_error',
@@ -140,7 +136,7 @@ async function handleOutdoorNavigation(
   const { destination, currentPosition } = payload;
   const sessionManager = services.sessionManager as SessionManager;
 
-  console.log(`[WS] Starting outdoor navigation for ${client.userId} to ${destination}`);
+  logger.log(`[WS] Starting outdoor navigation for ${client.userId} to ${destination}`);
 
   // Create a session ID for outdoor navigation
   const sessionId = `outdoor_${Date.now()}_${client.id}`;
@@ -214,11 +210,12 @@ async function handleOutdoorNavigation(
       priority: 'normal',
       currentSegmentIndex: 0,
       stepsRemaining: mockRoute.payload.totalDistance,
+      totalStepsRemaining: mockRoute.payload.totalDistance,
       confidence: 1.0,
     },
   };
 
-  console.log(`[WS] Outdoor route generated: ${mockRoute.sessionId}`);
+  logger.log(`[WS] Outdoor route generated: ${mockRoute.sessionId}`);
   return [mockRoute, firstInstruction];
 }
 
@@ -245,7 +242,7 @@ export async function handleSensorUpdate(
 
     return messages;
   } catch (error: any) {
-    console.error('[WS] Sensor update error:', error);
+    logger.error('[WS] Sensor update error:', error.message, error.stack);
     return [
       createErrorMessage('sensor_error', error.message || 'Failed to process sensor update', true),
     ];
@@ -274,7 +271,7 @@ export async function handleVisualResponse(
 
     return messages;
   } catch (error: any) {
-    console.error('[WS] Visual response error:', error);
+    logger.error('[WS] Visual response error:', error.message, error.stack);
     return [
       createErrorMessage(
         'visual_error',
@@ -327,12 +324,13 @@ export async function handleVisualSkipped(
           priority: 'normal',
           currentSegmentIndex: session.currentSegmentIndex,
           stepsRemaining: 0,
+          totalStepsRemaining: 0,
           confidence: session.confidence,
         },
       },
     ];
   } catch (error: any) {
-    console.error('[WS] Visual skipped error:', error);
+    logger.error('[WS] Visual skipped error:', error.message, error.stack);
     return [
       createErrorMessage('visual_skipped_error', error.message || 'Failed to handle skipped visual', true),
     ];
@@ -437,12 +435,13 @@ export async function handleVoiceCommand(
           priority: 'normal',
           currentSegmentIndex: 0,
           stepsRemaining: 0,
+          totalStepsRemaining: 0,
           confidence: 1.0,
         },
       },
     ];
   } catch (error: any) {
-    console.error('[WS] Voice command error:', error);
+    logger.error('[WS] Voice command error:', error.message, error.stack);
     return [
       createErrorMessage('voice_command_error', error.message || 'Failed to process voice command', true),
     ];
@@ -469,7 +468,7 @@ export async function handlePause(
     const messages = await navigationEngine.pauseNavigation(client.sessionId);
     return messages;
   } catch (error: any) {
-    console.error('[WS] Pause error:', error);
+    logger.error('[WS] Pause error:', error.message, error.stack);
     return [
       createErrorMessage('pause_error', error.message || 'Failed to pause navigation', true),
     ];
@@ -496,7 +495,7 @@ export async function handleResume(
     const messages = await navigationEngine.resumeNavigation(client.sessionId);
     return messages;
   } catch (error: any) {
-    console.error('[WS] Resume error:', error);
+    logger.error('[WS] Resume error:', error.message, error.stack);
     return [
       createErrorMessage('resume_error', error.message || 'Failed to resume navigation', true),
     ];
@@ -529,7 +528,7 @@ export async function handleCancel(
     }
     sessionManager.clearActiveSession(client.id);
 
-    console.log(`[WS] Outdoor navigation cancelled for ${client.userId}`);
+    logger.log(`[WS] Outdoor navigation cancelled for ${client.userId}`);
 
     return [
       {
@@ -540,7 +539,7 @@ export async function handleCancel(
       },
     ];
   } catch (error: any) {
-    console.error('[WS] Cancel error:', error);
+    logger.error('[WS] Cancel error:', error.message, error.stack);
     return [
       createErrorMessage('cancel_error', error.message || 'Failed to cancel navigation', true),
     ];
@@ -582,6 +581,7 @@ export async function handleRepeat(
             priority: 'normal',
             currentSegmentIndex: session.currentSegmentIndex,
             stepsRemaining: 0,
+            totalStepsRemaining: 0,
             confidence: session.confidence,
           },
         },
@@ -606,12 +606,13 @@ export async function handleRepeat(
           priority: 'normal',
           currentSegmentIndex: session.currentSegmentIndex,
           stepsRemaining: Math.max(0, currentSegment.distanceSteps - session.stepsTakenInSegment),
+          totalStepsRemaining: 0,
           confidence: session.confidence,
         },
       },
     ];
   } catch (error: any) {
-    console.error('[WS] Repeat error:', error);
+    logger.error('[WS] Repeat error:', error.message, error.stack);
     return [
       createErrorMessage('repeat_error', error.message || 'Failed to repeat instruction', true),
     ];
@@ -649,6 +650,7 @@ export async function handleMessage(
   message: ClientMessage,
   services: WebSocketServices
 ): Promise<ServerMessage[]> {
+  logger.log(`[WS] RECEIVED: ${JSON.stringify(message)}`);
   try {
     switch (message.type) {
       case 'start_navigation':
@@ -697,7 +699,7 @@ export async function handleMessage(
         ];
     }
   } catch (error: any) {
-    console.error('[WS] Message handler error:', error);
+    logger.error('[WS] Message router error:', error.message, error.stack);
     return [
       createErrorMessage(
         'handler_error',
@@ -733,7 +735,7 @@ export async function handlePositionReport(
   try {
     const { position, accuracy } = payload;
 
-    console.log(`[WS] Position report from ${client.id}: lat=${position.lat}, lng=${position.lng}, accuracy=${accuracy}m`);
+    logger.log(`[WS] Position report from ${client.id}: lat=${position.lat}, lng=${position.lng}, accuracy=${accuracy}m`);
 
     // Update outdoor navigation session if exists
     if (client.sessionId && client.sessionId.startsWith('outdoor_')) {
@@ -757,7 +759,7 @@ export async function handlePositionReport(
       },
     ];
   } catch (error: any) {
-    console.error('[WS] Position report error:', error);
+    logger.error('[WS] Position report error:', error.message, error.stack);
     return [
       createErrorMessage('position_error', error.message || 'Failed to process position report', true),
     ];
@@ -785,12 +787,12 @@ export async function handleHeadingReport(
 
     // The mobile app uses heading + targetBearing to show direction arrow
     // No response needed for heading updates, just log it
-    console.log(`[WS] Heading report from ${client.id}: ${heading}°`);
+    logger.log(`[WS] Heading report from ${client.id}: ${heading}°`);
 
     // Return empty array - no response needed
     return [];
   } catch (error: any) {
-    console.error('[WS] Heading report error:', error);
+    logger.error('[WS] Heading report error:', error.message, error.stack);
     // Don't send error for heading reports - they're fire-and-forget
     return [];
   }

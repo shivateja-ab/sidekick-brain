@@ -1,4 +1,5 @@
 import type { PrismaClient } from '@prisma/client';
+import { logger } from '../utils/logger.js';
 import type {
   NavigationSessionRuntime,
   PathSegment,
@@ -101,9 +102,10 @@ export type ServerMessage = {
       type: 'instruction';
       payload: {
         speech: string;
-        priority: 'high' | 'normal' | 'low';
+        priority: 'urgent' | 'high' | 'normal' | 'low';
         currentSegmentIndex: number;
-        stepsRemaining: number;
+        stepsRemaining: number; // In current segment
+        totalStepsRemaining: number; // For entire path
         nextAction?: string;
         confidence: number;
         // Outdoor navigation fields
@@ -267,8 +269,9 @@ export class NavigationEngine {
     currentRoomId?: string,
     currentHeading: number = 0
   ): Promise<{ session: NavigationSessionRuntime; messages: ServerMessage[] }> {
+    const normalizedHeading = this.positionTracker.normalizeHeading(currentHeading);
     console.log(
-      `[NavigationEngine] Starting navigation: userId=${userId}, flatMapId=${flatMapId}, destination=${destinationRoomId}`
+      `[NavigationEngine] Starting navigation: userId=${userId}, flatMapId=${flatMapId}, destination=${destinationRoomId}, heading=${normalizedHeading}`
     );
 
     try {
@@ -302,7 +305,7 @@ export class NavigationEngine {
       }
 
       // Calculate path
-      console.log(`[NavigationEngine] Calculating path from ${startRoomId} to ${destinationRoomId}`);
+      logger.log(`[NavigationEngine] Calculating path from ${startRoomId} to ${destinationRoomId}`);
 
       // Collect all doorways (both directions)
       const allDoorways: Doorway[] = [];
@@ -342,7 +345,7 @@ export class NavigationEngine {
           currentRoomId: startRoomId,
           estimatedPositionX: startRoom.positionX,
           estimatedPositionY: startRoom.positionY,
-          currentCompassHeading: currentHeading,
+          currentCompassHeading: normalizedHeading,
           confidence: 1.0,
           stepsTakenInSegment: 0,
           totalStepsInSegment: path[0]?.distanceSteps || 0,
@@ -362,11 +365,12 @@ export class NavigationEngine {
         currentSegmentIndex: 0,
         currentRoomId: startRoomId,
         estimatedPosition: { x: startRoom.positionX, y: startRoom.positionY },
-        currentCompassHeading: currentHeading,
+        currentCompassHeading: normalizedHeading,
         confidence: 1.0,
         stepsTakenInSegment: 0,
         totalStepsInSegment: path[0]?.distanceSteps || 0,
         triggeredCheckpoints: [],
+        triggeredProximityAlerts: [],
         lastVisualConfirmAt: null,
         lastConfirmedRoomId: null,
         pendingVisualRequest: false,
@@ -405,13 +409,13 @@ export class NavigationEngine {
         },
       });
 
-      console.log(
+      logger.log(
         `[NavigationEngine] Navigation started: sessionId=${session.id}, pathSegments=${path.length}`
       );
 
       return { session, messages };
-    } catch (error) {
-      console.error('[NavigationEngine] Error starting navigation:', error);
+    } catch (error: any) {
+      logger.error('[NavigationEngine] Error starting navigation:', error.message, error.stack);
       throw error;
     }
   }
@@ -451,7 +455,7 @@ export class NavigationEngine {
 
     // Skip if not in active navigation state
     if (session.status !== 'navigating' && session.status !== 'confirming_start') {
-      console.log(
+      logger.log(
         `[NavigationEngine] Skipping sensor update for session ${sessionId} with status ${session.status}`
       );
       return [];
@@ -463,7 +467,8 @@ export class NavigationEngine {
     const previousPosition = { ...session.estimatedPosition };
 
     // Process step batches if provided (new format), otherwise use legacy format
-    let currentHeading = payload.currentHeading || payload.compassHeading || session.currentCompassHeading;
+    let currentRawHeading = payload.currentHeading || payload.compassHeading || session.currentCompassHeading;
+    const currentHeading = this.positionTracker.normalizeHeading(currentRawHeading);
 
     if (payload.stepBatches && payload.stepBatches.length > 0) {
       // New batch-based processing
@@ -476,7 +481,7 @@ export class NavigationEngine {
 
       // Log for debugging
       const net = this.positionTracker.getNetDisplacement(payload.stepBatches);
-      console.log(
+      logger.log(
         `[NavigationEngine] User ${session.userId}: +${result.totalSteps} steps, ` +
         `net displacement: ${net.distance.toFixed(1)} steps, ` +
         `position: (${result.x.toFixed(1)}, ${result.y.toFixed(1)})`
@@ -519,13 +524,13 @@ export class NavigationEngine {
     // Check progress toward destination
     const progressStatus = this.checkProgress(session, previousPosition);
     if (progressStatus === 'wrong_way') {
-      console.log(`[NavigationEngine] Warning: User may be going wrong way`);
+      logger.log(`[NavigationEngine] Warning: User may be going wrong way`);
       // Could send a warning message here if needed
     }
 
     // Check if segment is complete
     if (session.stepsTakenInSegment >= session.totalStepsInSegment) {
-      console.log(
+      logger.log(
         `[NavigationEngine] Segment ${session.currentSegmentIndex} complete, advancing`
       );
       const advanceMessages = await this.advanceSegment(session);
@@ -549,7 +554,7 @@ export class NavigationEngine {
           trigger: visualTrigger,
         },
       });
-      console.log(
+      logger.log(
         `[NavigationEngine] Visual trigger: ${visualTrigger.reason} (priority: ${visualTrigger.priority})`
       );
     } else {
@@ -567,6 +572,7 @@ export class NavigationEngine {
             priority: 'normal',
             currentSegmentIndex: session.currentSegmentIndex,
             stepsRemaining,
+            totalStepsRemaining: this.calculateTotalStepsRemaining(session),
             nextAction: nextSegment?.action,
             confidence: session.confidence,
           },
@@ -756,6 +762,7 @@ export class NavigationEngine {
               priority: 'normal',
               currentSegmentIndex: session.currentSegmentIndex,
               stepsRemaining,
+              totalStepsRemaining: this.calculateTotalStepsRemaining(session),
               confidence: session.confidence,
             },
           });
@@ -883,6 +890,7 @@ export class NavigationEngine {
           priority: 'normal',
           currentSegmentIndex: session.currentSegmentIndex,
           stepsRemaining: 0,
+          totalStepsRemaining: this.calculateTotalStepsRemaining(session),
           confidence: session.confidence,
         },
       },
@@ -932,6 +940,7 @@ export class NavigationEngine {
           priority: 'normal',
           currentSegmentIndex: session.currentSegmentIndex,
           stepsRemaining,
+          totalStepsRemaining: this.calculateTotalStepsRemaining(session),
           confidence: session.confidence,
         },
       },
@@ -993,6 +1002,7 @@ export class NavigationEngine {
         stepsTakenInSegment: dbSession.stepsTakenInSegment,
         totalStepsInSegment: dbSession.totalStepsInSegment,
         triggeredCheckpoints,
+        triggeredProximityAlerts: (dbSession as any).triggeredProximityAlerts ? JSON.parse((dbSession as any).triggeredProximityAlerts) : [],
         lastVisualConfirmAt: dbSession.lastVisualConfirmAt,
         lastConfirmedRoomId: dbSession.lastConfirmedRoomId || null,
         pendingVisualRequest: dbSession.pendingVisualRequest,
@@ -1022,6 +1032,7 @@ export class NavigationEngine {
     session.currentSegmentIndex++;
     session.stepsTakenInSegment = 0;
     session.triggeredCheckpoints = [];
+    session.triggeredProximityAlerts = [];
 
     // Check if navigation is complete
     if (session.currentSegmentIndex >= session.path.length) {
@@ -1135,13 +1146,115 @@ export class NavigationEngine {
             priority: checkpoint.type === 'confirm' ? 'high' : 'normal',
             currentSegmentIndex: session.currentSegmentIndex,
             stepsRemaining,
+            totalStepsRemaining: this.calculateTotalStepsRemaining(session),
             confidence: session.confidence,
           },
         };
       }
     }
 
+    // Proximity alerts (Spec: 15, 10, 5 steps)
+    const proximityAlert = this.checkProximityAlerts(session);
+    if (proximityAlert) {
+      return proximityAlert;
+    }
+
     return null;
+  }
+
+  /**
+   * Checks for proximity alerts (15, 10, 5 steps)
+   */
+  private checkProximityAlerts(session: NavigationSessionRuntime): ServerMessage | null {
+    const currentSegment = session.path[session.currentSegmentIndex];
+    if (!currentSegment) return null;
+
+    const stepsRemaining = currentSegment.distanceSteps - session.stepsTakenInSegment;
+
+    // We only care about turns or room changes (walk segments shouldn't spam this?)
+    // Actually, the spec says "In about 15 steps, turn left". So it's about the NEXT segment's action.
+    const nextSegment = session.path[session.currentSegmentIndex + 1];
+    if (!nextSegment) {
+      // Last segment - check for destination arrival proximity (3 steps)
+      if (stepsRemaining === 3 && !session.triggeredProximityAlerts.includes('arrival_3')) {
+        session.triggeredProximityAlerts.push('arrival_3');
+        return {
+          type: 'instruction',
+          payload: {
+            speech: 'Destination on your right ahead', // Placeholder, should be smart
+            priority: 'normal',
+            currentSegmentIndex: session.currentSegmentIndex,
+            stepsRemaining: 3,
+            totalStepsRemaining: 3,
+            confidence: session.confidence,
+          },
+        };
+      }
+      return null;
+    }
+
+    // If next segment is a turn or room entry
+    const turnAction = nextSegment.action === 'turn' ? this.directionTranslator.getTurnDirection(currentSegment.compassHeading, nextSegment.compassHeading) : 'enter the room';
+
+    const thresholds = [15, 10, 5];
+    for (const t of thresholds) {
+      if (stepsRemaining <= t && !session.triggeredProximityAlerts.includes(`prox_${t}`)) {
+        session.triggeredProximityAlerts.push(`prox_${t}`);
+
+        let message = '';
+        if (t === 15) message = `In about 15 steps, ${turnAction}`;
+        if (t === 10) message = `10 steps, then ${turnAction}`;
+        if (t === 5) message = `${turnAction.charAt(0).toUpperCase() + turnAction.slice(1)} ahead`;
+
+        return {
+          type: 'instruction',
+          payload: {
+            speech: message,
+            priority: t === 5 ? 'high' : 'normal',
+            currentSegmentIndex: session.currentSegmentIndex,
+            stepsRemaining,
+            totalStepsRemaining: this.calculateTotalStepsRemaining(session),
+            confidence: session.confidence,
+          },
+        };
+      }
+    }
+
+    // Urgent turn signal at 0 steps
+    if (stepsRemaining <= 0 && !session.triggeredProximityAlerts.includes('prox_0')) {
+      session.triggeredProximityAlerts.push('prox_0');
+      const message = `${turnAction.charAt(0).toUpperCase() + turnAction.slice(1)} now`;
+      return {
+        type: 'instruction',
+        payload: {
+          speech: message,
+          priority: 'urgent',
+          currentSegmentIndex: session.currentSegmentIndex,
+          stepsRemaining: 0,
+          totalStepsRemaining: this.calculateTotalStepsRemaining(session),
+          confidence: session.confidence,
+        },
+      };
+    }
+
+    return null;
+  }
+
+  /**
+   * Calculates total steps remaining in the entire path
+   */
+  private calculateTotalStepsRemaining(session: NavigationSessionRuntime): number {
+    const currentSegment = session.path[session.currentSegmentIndex];
+    if (!currentSegment) return 0;
+
+    const stepsInCurrent = Math.max(0, currentSegment.distanceSteps - session.stepsTakenInSegment);
+
+    let followingSteps = 0;
+    for (let i = session.currentSegmentIndex + 1; i < session.path.length; i++) {
+      followingSteps += session.path[i].distanceSteps;
+    }
+
+    return stepsInCurrent + followingSteps;
   }
 
   /**
@@ -1165,15 +1278,16 @@ export class NavigationEngine {
           stepsTakenInSegment: session.stepsTakenInSegment,
           totalStepsInSegment: session.totalStepsInSegment,
           triggeredCheckpoints: JSON.stringify(session.triggeredCheckpoints),
+          triggeredProximityAlerts: JSON.stringify(session.triggeredProximityAlerts),
           lastVisualConfirmAt: session.lastVisualConfirmAt,
           lastConfirmedRoomId: session.lastConfirmedRoomId,
           pendingVisualRequest: session.pendingVisualRequest,
           lastUpdateAt: new Date(),
           completedAt: session.status === 'completed' ? new Date() : null,
-        },
+        } as any,
       });
-    } catch (error) {
-      console.error(`[NavigationEngine] Error persisting session ${session.id}:`, error);
+    } catch (error: any) {
+      logger.error(`[NavigationEngine] Error persisting session ${session.id}:`, error.message, error.stack);
       // Don't throw - allow navigation to continue even if persistence fails
     }
   }

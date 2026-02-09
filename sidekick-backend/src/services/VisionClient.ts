@@ -1,6 +1,7 @@
 /**
  * Vision Context for API requests
  */
+import { logger } from '../utils/logger.js';
 export interface VisionContext {
   query: 'validate_position' | 'identify_room' | 'check_obstacles';
   expectedRoom?: string;
@@ -211,7 +212,7 @@ export class VisionClient {
    */
   private async sendRequest(request: VisionRequest): Promise<VisionResponse> {
     const queryType = request.context.query;
-    console.log(`[VisionClient] Sending request: ${queryType}`);
+    logger.log(`[VisionClient] Sending request: ${queryType}`);
 
     try {
       // Create AbortController for timeout
@@ -241,11 +242,11 @@ export class VisionClient {
 
         // Log response
         if (data.success) {
-          console.log(
+          logger.log(
             `[VisionClient] Response: success, confidence=${data.confidence || 'N/A'}, query=${queryType}`
           );
         } else {
-          console.log(
+          logger.log(
             `[VisionClient] Response: failure, error=${data.error || 'unknown'}, query=${queryType}`
           );
         }
@@ -310,7 +311,7 @@ export class VisionClient {
       // Ignore JSON parse errors, use defaults
     }
 
-    console.error(
+    logger.error(
       `[VisionClient] HTTP error: ${errorMessage}, status=${response.status}, query=${queryType}`
     );
 
@@ -354,7 +355,7 @@ export class VisionClient {
       errorMessage = String(error);
     }
 
-    console.error(`[VisionClient] Error: ${context}`, error);
+    logger.error(`[VisionClient] Error: ${context}`, error instanceof Error ? { message: error.message, stack: error.stack } : error);
 
     return {
       success: false,

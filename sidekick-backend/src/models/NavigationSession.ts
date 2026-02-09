@@ -52,6 +52,7 @@ export interface NavigationSessionRuntime {
   stepsTakenInSegment: number;
   totalStepsInSegment: number;
   triggeredCheckpoints: string[];
+  triggeredProximityAlerts: string[];
   lastVisualConfirmAt: Date | null;
   lastConfirmedRoomId: string | null;
   pendingVisualRequest: boolean;

@@ -154,6 +154,7 @@ model NavigationSession {
   
   // Checkpoints triggered (JSON array of checkpoint IDs)
   triggeredCheckpoints String @default("[]")
+  triggeredProximityAlerts String @default("[]")
   
   // Visual confirmation tracking
   lastVisualConfirmAt   DateTime?

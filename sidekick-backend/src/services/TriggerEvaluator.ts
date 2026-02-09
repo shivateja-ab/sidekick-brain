@@ -71,13 +71,13 @@ export interface NavigationSession {
  */
 export class TriggerEvaluator {
   // Steps before turn to request visual confirmation
-  private readonly TURN_APPROACH_STEPS = 5;
+  private readonly TURN_APPROACH_STEPS = 8;
 
   // Steps before entering room to request visual confirmation
-  private readonly ROOM_ENTER_STEPS = 3;
+  private readonly ROOM_ENTER_STEPS = 5;
 
   // Confidence threshold below which visual confirmation is needed
-  private readonly LOW_CONFIDENCE_THRESHOLD = 0.6;
+  private readonly LOW_CONFIDENCE_THRESHOLD = 0.5;
 
   // Maximum seconds without visual confirmation before forcing a check
   private readonly MAX_SECONDS_WITHOUT_CONFIRM = 30;

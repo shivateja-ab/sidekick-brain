@@ -16,11 +16,11 @@ export class PositionTracker {
   // Default step length in centimeters
   private readonly DEFAULT_STEP_LENGTH_CM = 70;
 
-  // Confidence decay per step (lose 1% confidence per step)
-  private readonly CONFIDENCE_DECAY_PER_STEP = 0.01;
+  // Confidence decay per step (lose 0.5% confidence per step)
+  private readonly CONFIDENCE_DECAY_PER_STEP = 0.005;
 
-  // Confidence decay per second (lose 0.5% per second)
-  private readonly CONFIDENCE_DECAY_PER_SECOND = 0.005;
+  // Confidence decay per second (lose 1.5% per second)
+  private readonly CONFIDENCE_DECAY_PER_SECOND = 0.015;
 
   // Minimum confidence threshold (never go below 30%)
   private readonly MIN_CONFIDENCE = 0.3;
@@ -228,6 +228,20 @@ export class PositionTracker {
   }
 
   /**
+   * Normalizes a compass heading to the 0-360 range.
+   * 
+   * @param heading - Raw compass heading
+   * @returns Normalized heading (0-360)
+   * 
+   * @example
+   * normalizeHeading(370) // Returns 10
+   * normalizeHeading(-10) // Returns 350
+   */
+  normalizeHeading(heading: number): number {
+    return ((heading % 360) + 360) % 360;
+  }
+
+  /**
    * Gets the default step length in centimeters
    * 
    * @returns Step length in cm
@@ -279,7 +293,7 @@ export class PositionTracker {
 
     for (const batch of stepBatches) {
       if (batch.steps <= 0) continue;
-      
+
       // Use existing updatePosition for each batch
       position = this.updatePosition(position, batch.steps, batch.heading);
       totalSteps += batch.steps;
@@ -318,7 +332,7 @@ export class PositionTracker {
   ): number {
     const oldDistance = this.estimateDistanceBetween(oldPosition, targetPosition);
     const newDistance = this.estimateDistanceBetween(newPosition, targetPosition);
-    
+
     return oldDistance - newDistance; // Positive if got closer
   }
 
@@ -345,7 +359,7 @@ export class PositionTracker {
 
     for (const batch of stepBatches) {
       if (batch.steps <= 0) continue;
-      
+
       // Convert compass heading to radians
       const radians = ((90 - batch.heading) * Math.PI) / 180;
       dx += batch.steps * Math.cos(radians);
