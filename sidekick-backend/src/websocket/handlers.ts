@@ -6,6 +6,38 @@ import type { NavigationEngine } from '../services/NavigationEngine.js';
 import type { SessionManager } from './SessionManager.js';
 import type { TriggerEvaluator } from '../services/TriggerEvaluator.js';
 
+function sanitizeForWsLog(value: unknown): unknown {
+  if (!value || typeof value !== 'object') return value;
+
+  const obj: any = value;
+  const type = obj.type;
+
+  if (type === 'visual_response' && obj.payload && typeof obj.payload === 'object') {
+    const p: any = { ...obj.payload };
+    if (typeof p.currentImage === 'string') p.currentImage = `<base64:${p.currentImage.length}>`;
+    if (typeof p.referenceImage === 'string') p.referenceImage = `<base64:${p.referenceImage.length}>`;
+    return { ...obj, payload: p };
+  }
+
+  if (type === 'request_visual' && obj.payload && typeof obj.payload === 'object') {
+    const p: any = { ...obj.payload };
+    if (p.trigger && typeof p.trigger === 'object') {
+      const trigger: any = { ...p.trigger };
+      if (trigger.validation && typeof trigger.validation === 'object') {
+        const validation: any = { ...trigger.validation };
+        if (typeof validation.referenceImage === 'string') {
+          validation.referenceImage = `<base64:${validation.referenceImage.length}>`;
+        }
+        trigger.validation = validation;
+      }
+      p.trigger = trigger;
+    }
+    return { ...obj, payload: p };
+  }
+
+  return value;
+}
+
 /**
  * Send a message to a WebSocket client
  * 
@@ -15,7 +47,7 @@ import type { TriggerEvaluator } from '../services/TriggerEvaluator.js';
 function sendToClient(socket: any, message: ServerMessage): void {
   try {
     if (socket.readyState === 1) {
-      const messageStr = JSON.stringify(message);
+      const messageStr = JSON.stringify(sanitizeForWsLog(message));
       logger.log(`[WS] SENDING: ${messageStr}`);
       socket.send(messageStr);
     }
@@ -310,6 +342,11 @@ export async function handleVisualSkipped(
     // Clear pending visual request
     session.pendingVisualRequest = false;
 
+    // Resume navigation state so sensor updates continue to be processed
+    if ((session as any).status === 'awaiting_visual' || (session as any).status === 'confirming_start') {
+      (session as any).status = 'navigating';
+    }
+
     // Decrease confidence slightly
     session.confidence = Math.max(0.3, session.confidence - 0.1);
 
@@ -351,32 +388,51 @@ export async function handleVoiceCommand(
 
     const navigationEngine = services.navigationEngine as NavigationEngine;
     // const sessionManager = services.sessionManager as SessionManager;
-    const triggerEvaluator = (services as any).triggerEvaluator as TriggerEvaluator;
+    const triggerEvaluator = (services as any).triggerEvaluator as TriggerEvaluator | undefined;
 
     // Map common phrases to actions
-    if (lowerCommand.includes('where am i') || lowerCommand.includes('current position')) {
-      // Request position check
+    if (
+      lowerCommand.includes('where am i') ||
+      lowerCommand.includes('current position') ||
+      lowerCommand === 'where' ||
+      lowerCommand.includes(' where ') ||
+      lowerCommand.includes('location')
+    ) {
       if (!client.sessionId) {
-        return [
-          createErrorMessage('no_active_session', 'No active navigation session', true),
-        ];
+        return [createErrorMessage('no_active_session', 'No active navigation session', true)];
       }
 
       const session = navigationEngine.getSession(client.sessionId);
       if (!session) {
-        return [
-          createErrorMessage('session_not_found', 'Navigation session not found', false),
-        ];
+        return [createErrorMessage('session_not_found', 'Navigation session not found', true)];
       }
 
-      const trigger = triggerEvaluator.createUserRequestTrigger(session, command);
+      const currentSegment = (session as any).path?.[(session as any).currentSegmentIndex];
+      const expectedHeading = currentSegment?.compassHeading;
+
       session.pendingVisualRequest = true;
 
       return [
         {
           type: 'request_visual',
           payload: {
-            trigger,
+            trigger: {
+              reason: 'user_requested',
+              priority: 'normal',
+              message: 'Checking your position',
+              capture: {
+                mode: 'auto',
+                delaySeconds: 1,
+                guidanceAudio: 'Hold phone forward at chest level',
+                expectedHeading: typeof expectedHeading === 'number' ? expectedHeading : undefined,
+              },
+              validation: {
+                query: 'validate_position',
+                expectedRoom: currentSegment?.toRoomId || (session as any).currentRoomId,
+                expectedLandmarks: currentSegment?.expectedLandmarks || [],
+                referenceImageId: null,
+              },
+            },
           },
         },
       ];
@@ -394,6 +450,16 @@ export async function handleVoiceCommand(
       if (!session) {
         return [
           createErrorMessage('session_not_found', 'Navigation session not found', false),
+        ];
+      }
+
+      if (!triggerEvaluator) {
+        return [
+          createErrorMessage(
+            'service_unavailable',
+            'Voice commands are temporarily unavailable on the server.',
+            true
+          ),
         ];
       }
 
@@ -514,29 +580,32 @@ export async function handleCancel(
     const navigationEngine = services.navigationEngine as NavigationEngine;
     const sessionManager = services.sessionManager as SessionManager;
 
-    // Check if this is an indoor navigation session
+    if (client.sessionId && client.sessionId.startsWith('outdoor_')) {
+      // Outdoor navigation - clear session and send confirmation
+      outdoorNavigationSessions.delete(client.sessionId);
+      sessionManager.clearActiveSession(client.id);
+
+      logger.log(`[WS] Outdoor navigation cancelled for ${client.userId}`);
+
+      return [
+        {
+          type: 'navigation_cancelled',
+          payload: {
+            speech: 'Navigation cancelled',
+          },
+        },
+      ];
+    }
+
+    // Indoor navigation session
     if (client.sessionId) {
       const messages = await navigationEngine.cancelNavigation(client.sessionId);
-      // Clear active session
       sessionManager.clearActiveSession(client.id);
       return messages;
     }
 
-    // Outdoor navigation - clear session and send confirmation
-    if (client.sessionId && client.sessionId.startsWith('outdoor_')) {
-      outdoorNavigationSessions.delete(client.sessionId);
-    }
-    sessionManager.clearActiveSession(client.id);
-
-    logger.log(`[WS] Outdoor navigation cancelled for ${client.userId}`);
-
     return [
-      {
-        type: 'navigation_cancelled',
-        payload: {
-          speech: 'Navigation cancelled',
-        },
-      },
+      createErrorMessage('no_active_session', 'No active navigation session', true),
     ];
   } catch (error: any) {
     logger.error('[WS] Cancel error:', error.message, error.stack);
@@ -605,6 +674,7 @@ export async function handleRepeat(
           speech: instruction,
           priority: 'normal',
           currentSegmentIndex: session.currentSegmentIndex,
+          targetHeading: currentSegment.compassHeading,
           stepsRemaining: Math.max(0, currentSegment.distanceSteps - session.stepsTakenInSegment),
           totalStepsRemaining: 0,
           confidence: session.confidence,
@@ -650,8 +720,21 @@ export async function handleMessage(
   message: ClientMessage,
   services: WebSocketServices
 ): Promise<ServerMessage[]> {
-  logger.log(`[WS] RECEIVED: ${JSON.stringify(message)}`);
+  logger.log(`[WS] RECEIVED: ${JSON.stringify(sanitizeForWsLog(message))}`);
   try {
+    const sessionManager = services.sessionManager as SessionManager;
+    const latestClient = sessionManager.getClientById(client.id);
+    if (latestClient && latestClient.sessionId !== client.sessionId) {
+      client.sessionId = latestClient.sessionId;
+    }
+
+    // Fallback: allow client to send root-level sessionId
+    const messageSessionId = (message as any)?.sessionId;
+    if (!client.sessionId && typeof messageSessionId === 'string' && messageSessionId.length > 0) {
+      client.sessionId = messageSessionId;
+      sessionManager.setActiveSession(client.id, messageSessionId);
+    }
+
     switch (message.type) {
       case 'start_navigation':
         return handleStartNavigation(client, message.payload, services);

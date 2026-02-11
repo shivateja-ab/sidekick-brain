@@ -2,9 +2,9 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import jwt from '@fastify/jwt';
 import websocket from '@fastify/websocket';
-import { config } from './config.js';
 import dotenv from 'dotenv';
 dotenv.config();
+import { config } from './config.js';
 import { prisma, disconnectPrisma } from './db/client.js';
 
 
@@ -187,6 +187,7 @@ async function registerWebSocket(services: ReturnType<typeof initializeServices>
     navigationEngine: services.navigationEngine,
     sessionManager: services.sessionManager,
     fastify: fastify,
+    triggerEvaluator: services.triggerEvaluator,
   });
 
   console.log('[Server] WebSocket routes registered');

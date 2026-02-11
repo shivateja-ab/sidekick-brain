@@ -11,7 +11,8 @@ export type VisualTriggerReason =
   | 'time_elapsed' // Been too long since last visual check
   | 'off_course' // Previous check showed user not where expected
   | 'user_requested' // User explicitly asked "where am I"
-  | 'navigation_start'; // Beginning of navigation, confirm start position
+  | 'navigation_start' // Beginning of navigation, confirm start position
+  | 'arrival_verification'; // Navigation completed, request a final verification photo
 
 /**
  * Priority level for visual trigger

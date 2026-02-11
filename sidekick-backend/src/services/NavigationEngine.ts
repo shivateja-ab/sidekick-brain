@@ -28,7 +28,8 @@ interface VisionClient {
     confidence?: number;
     detectedRoom?: string;
     detectedLandmarks?: string[];
-    message?: string;
+    speech: string;
+    error?: string;
   }>;
 }
 
@@ -96,6 +97,7 @@ export type ServerMessage = {
         firstInstruction: string;
         totalSteps: number;
         estimatedSeconds: number;
+        targetHeading?: number;
       };
     }
     | {
@@ -104,6 +106,7 @@ export type ServerMessage = {
         speech: string;
         priority: 'urgent' | 'high' | 'normal' | 'low';
         currentSegmentIndex: number;
+        targetHeading?: number;
         stepsRemaining: number; // In current segment
         totalStepsRemaining: number; // For entire path
         nextAction?: string;
@@ -231,6 +234,9 @@ export class NavigationEngine {
   // In-memory active sessions
   private sessions: Map<string, NavigationSessionRuntime> = new Map();
 
+  private lastLowConfidenceVisualRequestAt: Map<string, number> = new Map();
+  private readonly MIN_LOW_CONFIDENCE_VISUAL_INTERVAL_MS = 15000;
+
   constructor(
     private prisma: PrismaClient,
     private pathFinder: PathFinder,
@@ -318,6 +324,37 @@ export class NavigationEngine {
         }
       }
 
+      logger.log(
+        `[NavigationEngine] Path inputs: rooms=${flatMap.rooms.length}, doorways=${allDoorways.length}`
+      );
+
+      // Fallback: if room includes didn't bring doorways, fetch directly via Prisma
+      if (allDoorways.length === 0) {
+        const dbDoorways = await this.prisma.doorway.findMany({
+          where: {
+            OR: [
+              { fromRoom: { flatMapId } },
+              { toRoom: { flatMapId } },
+            ],
+          },
+          select: {
+            id: true,
+            fromRoomId: true,
+            toRoomId: true,
+            positionX: true,
+            positionY: true,
+            compassHeading: true,
+            type: true,
+            distanceSteps: true,
+          },
+        });
+
+        allDoorways.push(...(dbDoorways as any as Doorway[]));
+        logger.log(
+          `[NavigationEngine] Fallback doorway fetch: doorways=${dbDoorways.length}`
+        );
+      }
+
       const path = this.pathFinder.findPath(
         flatMap.rooms,
         allDoorways,
@@ -369,6 +406,7 @@ export class NavigationEngine {
         confidence: 1.0,
         stepsTakenInSegment: 0,
         totalStepsInSegment: path[0]?.distanceSteps || 0,
+        absStepsSinceLastConfirm: 0,
         triggeredCheckpoints: [],
         triggeredProximityAlerts: [],
         lastVisualConfirmAt: null,
@@ -396,6 +434,7 @@ export class NavigationEngine {
             firstInstruction,
             totalSteps,
             estimatedSeconds,
+            targetHeading: path?.[0]?.compassHeading,
           },
         },
       ];
@@ -466,6 +505,10 @@ export class NavigationEngine {
     // Store previous position for progress checking
     const previousPosition = { ...session.estimatedPosition };
 
+    // Compute expected segment heading (used to measure net progress)
+    const currentSegmentForProgress = session.path[session.currentSegmentIndex];
+    const expectedHeadingForProgress = currentSegmentForProgress?.compassHeading;
+
     // Process step batches if provided (new format), otherwise use legacy format
     let currentRawHeading = payload.currentHeading || payload.compassHeading || session.currentCompassHeading;
     const currentHeading = this.positionTracker.normalizeHeading(currentRawHeading);
@@ -487,8 +530,29 @@ export class NavigationEngine {
         `position: (${result.x.toFixed(1)}, ${result.y.toFixed(1)})`
       );
 
-      // Update steps taken in segment
-      session.stepsTakenInSegment += result.totalSteps;
+      // Track absolute movement for confidence decay
+      session.absStepsSinceLastConfirm += result.totalSteps;
+
+      // Update steps taken in segment as NET progress toward expected segment heading
+      if (typeof expectedHeadingForProgress === 'number') {
+        let netProgress = 0;
+        for (const batch of payload.stepBatches) {
+          if (!batch || batch.steps <= 0) continue;
+
+          const h = this.positionTracker.normalizeHeading(batch.heading);
+          let diff = Math.abs(h - expectedHeadingForProgress);
+          if (diff > 180) diff = 360 - diff;
+
+          // Project steps onto expected heading.
+          // diff=0 => +steps, diff=180 => -steps, diff=90 => ~0
+          netProgress += batch.steps * Math.cos((diff * Math.PI) / 180);
+        }
+
+        session.stepsTakenInSegment += netProgress;
+      } else {
+        // Fallback: if no segment, behave like before
+        session.stepsTakenInSegment += result.totalSteps;
+      }
     } else if (payload.stepsSinceLastUpdate !== undefined) {
       // Legacy format - single step update
       session.estimatedPosition = this.positionTracker.updatePosition(
@@ -497,11 +561,23 @@ export class NavigationEngine {
         payload.compassHeading || currentHeading
       );
 
+      // Track absolute movement for confidence decay
+      if (payload.stepsSinceLastUpdate > 0) {
+        session.absStepsSinceLastConfirm += payload.stepsSinceLastUpdate;
+      }
+
       // Update steps taken in segment
       if (payload.totalStepsInSegment !== undefined) {
         session.stepsTakenInSegment = payload.totalStepsInSegment;
       } else {
-        session.stepsTakenInSegment += payload.stepsSinceLastUpdate;
+        if (typeof expectedHeadingForProgress === 'number') {
+          const h = this.positionTracker.normalizeHeading(payload.compassHeading || currentHeading);
+          let diff = Math.abs(h - expectedHeadingForProgress);
+          if (diff > 180) diff = 360 - diff;
+          session.stepsTakenInSegment += payload.stepsSinceLastUpdate * Math.cos((diff * Math.PI) / 180);
+        } else {
+          session.stepsTakenInSegment += payload.stepsSinceLastUpdate;
+        }
       }
     }
 
@@ -513,7 +589,7 @@ export class NavigationEngine {
     const secondsSinceConfirm = session.lastVisualConfirmAt
       ? (Date.now() - session.lastVisualConfirmAt.getTime()) / 1000
       : (Date.now() - session.startedAt.getTime()) / 1000;
-    const stepsSinceConfirm = session.stepsTakenInSegment;
+    const stepsSinceConfirm = session.absStepsSinceLastConfirm;
 
     session.confidence = this.positionTracker.calculateConfidence(
       session.confidence,
@@ -546,17 +622,28 @@ export class NavigationEngine {
     // Check for visual triggers
     const visualTrigger = this.triggerEvaluator.evaluate(session);
     if (visualTrigger) {
-      session.pendingVisualRequest = true;
-      session.status = 'awaiting_visual';
-      messages.push({
-        type: 'request_visual',
-        payload: {
-          trigger: visualTrigger,
-        },
-      });
-      logger.log(
-        `[NavigationEngine] Visual trigger: ${visualTrigger.reason} (priority: ${visualTrigger.priority})`
-      );
+      if (
+        visualTrigger.reason === 'low_confidence' &&
+        !this.canRequestLowConfidenceVisual(session.id)
+      ) {
+        logger.log('[NavigationEngine] Skipping low_confidence visual trigger - rate limited');
+      } else {
+        if (visualTrigger.reason === 'low_confidence') {
+          this.lastLowConfidenceVisualRequestAt.set(session.id, Date.now());
+        }
+
+        session.pendingVisualRequest = true;
+        session.status = 'awaiting_visual';
+        messages.push({
+          type: 'request_visual',
+          payload: {
+            trigger: visualTrigger,
+          },
+        });
+        logger.log(
+          `[NavigationEngine] Visual trigger: ${visualTrigger.reason} (priority: ${visualTrigger.priority})`
+        );
+      }
     } else {
       // Generate current instruction if no visual needed
       const instruction = this.generateCurrentInstruction(session, currentHeading);
@@ -571,6 +658,7 @@ export class NavigationEngine {
             speech: instruction,
             priority: 'normal',
             currentSegmentIndex: session.currentSegmentIndex,
+            targetHeading: currentSegment.compassHeading,
             stepsRemaining,
             totalStepsRemaining: this.calculateTotalStepsRemaining(session),
             nextAction: nextSegment?.action,
@@ -704,9 +792,41 @@ export class NavigationEngine {
     // Call Vision API
     console.log(`[NavigationEngine] Calling Vision API for session ${sessionId}`);
     try {
+      let referenceImage = payload.referenceImage;
+
+      // If client didn't provide a reference image, try to fetch one from DB
+      if (!referenceImage || referenceImage.trim().length === 0) {
+        try {
+          const dbImage = await this.prisma.referenceImage.findFirst({
+            where: {
+              roomId: session.currentRoomId,
+            },
+            orderBy: {
+              capturedAt: 'desc',
+            },
+            select: {
+              imageData: true,
+            },
+          });
+
+          if (dbImage?.imageData) {
+            referenceImage = dbImage.imageData;
+            console.log(
+              `[NavigationEngine] Using reference image from DB for room ${session.currentRoomId}`
+            );
+          } else {
+            console.warn(
+              `[NavigationEngine] No reference image available (client empty, DB none) for room ${session.currentRoomId}`
+            );
+          }
+        } catch (dbErr) {
+          console.warn(`[NavigationEngine] Failed to load reference image from DB`, dbErr);
+        }
+      }
+
       const visionResult = await this.visionClient.validatePosition(
         payload.currentImage,
-        payload.referenceImage,
+        referenceImage,
         {
           expectedRoom: session.currentRoomId,
           expectedLandmarks: currentSegment.expectedLandmarks,
@@ -728,6 +848,7 @@ export class NavigationEngine {
         // Update confirmation tracking
         session.lastVisualConfirmAt = new Date();
         session.lastConfirmedRoomId = session.currentRoomId;
+        session.absStepsSinceLastConfirm = 0;
 
         // Update status if was confirming start
         if (session.status === 'confirming_start') {
@@ -745,7 +866,7 @@ export class NavigationEngine {
             success: true,
             isOnTrack: true,
             confidence: session.confidence,
-            speech: visionResult.message || 'Position confirmed. Continue.',
+            speech: visionResult.speech || 'Position confirmed. Continue.',
             action: 'continue',
           },
         });
@@ -779,7 +900,7 @@ export class NavigationEngine {
             success: true,
             isOnTrack: false,
             confidence: session.confidence,
-            speech: visionResult.message || "I'm not sure where you are. Let me recalculate.",
+            speech: visionResult.speech || "I'm not sure where you are. Let me recalculate.",
             action: 'recalculate',
           },
         });
@@ -795,12 +916,14 @@ export class NavigationEngine {
         // TODO: Attempt to identify room and recalculate path
       } else {
         // Vision API call failed
-        console.log(`[NavigationEngine] Vision API failed, requesting retry`);
+        console.log(
+          `[NavigationEngine] Vision API failed, requesting retry: error=${visionResult.error || 'unknown'}`
+        );
         messages.push({
           type: 'visual_result',
           payload: {
             success: false,
-            speech: visionResult.message || 'Could not process image. Please try again.',
+            speech: visionResult.speech || 'Could not process image. Please try again.',
             action: 'retry',
           },
         });
@@ -846,6 +969,7 @@ export class NavigationEngine {
     // Persist and remove from memory
     await this.persistSession(session);
     this.sessions.delete(sessionId);
+    this.lastLowConfidenceVisualRequestAt.delete(sessionId);
 
     console.log(`[NavigationEngine] Navigation cancelled: sessionId=${sessionId}`);
 
@@ -1001,10 +1125,11 @@ export class NavigationEngine {
         confidence: dbSession.confidence,
         stepsTakenInSegment: dbSession.stepsTakenInSegment,
         totalStepsInSegment: dbSession.totalStepsInSegment,
+        absStepsSinceLastConfirm: 0,
         triggeredCheckpoints,
         triggeredProximityAlerts: (dbSession as any).triggeredProximityAlerts ? JSON.parse((dbSession as any).triggeredProximityAlerts) : [],
         lastVisualConfirmAt: dbSession.lastVisualConfirmAt,
-        lastConfirmedRoomId: dbSession.lastConfirmedRoomId || null,
+        lastConfirmedRoomId: dbSession.lastConfirmedRoomId,
         pendingVisualRequest: dbSession.pendingVisualRequest,
         startedAt: dbSession.startedAt,
         lastUpdateAt: dbSession.lastUpdateAt,
@@ -1029,16 +1154,16 @@ export class NavigationEngine {
   private async advanceSegment(
     session: NavigationSessionRuntime
   ): Promise<ServerMessage[]> {
-    session.currentSegmentIndex++;
-    session.stepsTakenInSegment = 0;
-    session.triggeredCheckpoints = [];
-    session.triggeredProximityAlerts = [];
+    const nextIndex = session.currentSegmentIndex + 1;
 
-    // Check if navigation is complete
-    if (session.currentSegmentIndex >= session.path.length) {
+    // Check if navigation is complete (do not advance index past the end)
+    if (nextIndex >= session.path.length) {
       session.status = 'completed';
+      session.pendingVisualRequest = true;
+      session.triggeredCheckpoints = [];
+      session.triggeredProximityAlerts = [];
+
       await this.persistSession(session);
-      this.sessions.delete(session.id);
 
       console.log(`[NavigationEngine] Navigation complete: sessionId=${session.id}`);
 
@@ -1049,8 +1174,35 @@ export class NavigationEngine {
             speech: 'You have reached your destination.',
           },
         },
+        {
+          type: 'request_visual',
+          payload: {
+            trigger: {
+              reason: 'arrival_verification',
+              priority: 'high',
+              message: 'Please take a verification photo.',
+              capture: {
+                mode: 'tap',
+                delaySeconds: 0,
+                guidanceAudio: 'Hold phone forward and take a photo',
+                expectedHeading: session.currentCompassHeading,
+              },
+              validation: {
+                query: 'validate_position',
+                expectedRoom: session.destinationRoomId,
+                expectedLandmarks: [],
+                referenceImageId: null,
+              },
+            },
+          },
+        },
       ];
     }
+
+    session.currentSegmentIndex = nextIndex;
+    session.stepsTakenInSegment = 0;
+    session.triggeredCheckpoints = [];
+    session.triggeredProximityAlerts = [];
 
     // Setup next segment
     const nextSegment = session.path[session.currentSegmentIndex];
@@ -1062,6 +1214,12 @@ export class NavigationEngine {
     );
 
     return [];
+  }
+
+  private canRequestLowConfidenceVisual(sessionId: string): boolean {
+    const now = Date.now();
+    const last = this.lastLowConfidenceVisualRequestAt.get(sessionId) || 0;
+    return now - last >= this.MIN_LOW_CONFIDENCE_VISUAL_INTERVAL_MS;
   }
 
   /**

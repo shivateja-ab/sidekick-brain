@@ -48,18 +48,8 @@ export async function registerWebSocket(
           try {
             const decoded = (fastify as any).jwt.verify(token) as { userId: string; email: string };
 
-            // Create client in SessionManager
-            client = {
-              id: '',
-              socket: connection,
-              userId: decoded.userId,
-              sessionId: null,
-              connectedAt: new Date(),
-              lastPingAt: new Date(),
-            };
-
             const clientId = services.sessionManager.addClient(connection, decoded.userId);
-            client.id = clientId;
+            client = services.sessionManager.getClientById(clientId);
 
             console.log(`[WS] Client connected: userId=${decoded.userId}, clientId=${clientId}`);
 

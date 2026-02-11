@@ -51,6 +51,7 @@ export interface NavigationSessionRuntime {
   confidence: number;
   stepsTakenInSegment: number;
   totalStepsInSegment: number;
+  absStepsSinceLastConfirm: number;
   triggeredCheckpoints: string[];
   triggeredProximityAlerts: string[];
   lastVisualConfirmAt: Date | null;

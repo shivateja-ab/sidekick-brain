@@ -81,5 +81,6 @@ export interface WebSocketServices {
   navigationEngine: any; // NavigationEngine
   sessionManager: any; // SessionManager
   fastify: any; // FastifyInstance
+  triggerEvaluator?: any; // TriggerEvaluator
 
 }

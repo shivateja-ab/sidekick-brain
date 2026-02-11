@@ -104,7 +104,24 @@ export class VisionClient {
         'Vision API URL not provided. Set VISION_API_URL environment variable or pass apiUrl parameter.'
       );
     }
-    this.apiUrl = url;
+
+    // If the URL is a bare domain (no path), assume the vision endpoint is /api/vision
+    // This avoids HTTP 405 errors when users configure VISION_API_URL as the site root.
+    try {
+      const parsed = new URL(url);
+      const pathname = parsed.pathname || '/';
+      if (pathname === '/' || pathname === '') {
+        parsed.pathname = '/api/v1/analyze/vision';
+        this.apiUrl = parsed.toString();
+      } else {
+        this.apiUrl = url;
+      }
+    } catch {
+      // If URL parsing fails, keep original value
+      this.apiUrl = url;
+    }
+
+    logger.log(`[VisionClient] Using API URL: ${this.apiUrl}`);
   }
 
   /**
