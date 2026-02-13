@@ -190,10 +190,14 @@ export class DirectionTranslator {
     targetHeading: number,
     userHeading: number,
     distanceSteps: number = 0,
-    landmark?: string
+    landmark?: string,
+    allLandmarks?: string[]
   ): string {
     const clock = this.compassToClock(targetHeading, userHeading);
     const direction = this.clockToSpeech(clock);
+    
+    // Pick the best landmark hint: explicit single landmark, or first from array
+    const landmarkHint = landmark || (allLandmarks && allLandmarks.length > 0 ? allLandmarks[0] : undefined);
     
     let instruction = '';
     
@@ -204,25 +208,35 @@ export class DirectionTranslator {
         } else {
           instruction = `Walk ${direction}`;
         }
+        if (landmarkHint) {
+          instruction += `. Look for ${landmarkHint}`;
+        }
         break;
         
       case 'turn':
         // For turns, use the turn direction method for more natural language
         const turnDir = this.getTurnDirection(userHeading, targetHeading);
         instruction = turnDir.charAt(0).toUpperCase() + turnDir.slice(1);
+        if (landmarkHint) {
+          instruction += `, near ${landmarkHint}`;
+        }
         break;
         
       case 'exit_room':
         instruction = `Exit through door ${direction}`;
-        if (landmark) {
-          instruction += `, near the ${landmark}`;
+        if (landmarkHint) {
+          instruction += `, near the ${landmarkHint}`;
         }
         break;
         
       case 'enter_room':
-        instruction = `Enter through door ${direction}`;
-        if (landmark) {
-          instruction += `, near the ${landmark}`;
+        if (distanceSteps > 0) {
+          instruction = `Walk ${direction}, about ${distanceSteps} step${distanceSteps !== 1 ? 's' : ''}`;
+        } else {
+          instruction = `Continue ${direction}`;
+        }
+        if (landmarkHint) {
+          instruction += `. You should see ${landmarkHint} nearby`;
         }
         break;
         
@@ -231,6 +245,9 @@ export class DirectionTranslator {
         instruction = `Go ${direction}`;
         if (distanceSteps > 0) {
           instruction += `, about ${distanceSteps} step${distanceSteps !== 1 ? 's' : ''}`;
+        }
+        if (landmarkHint) {
+          instruction += `. Near ${landmarkHint}`;
         }
     }
     

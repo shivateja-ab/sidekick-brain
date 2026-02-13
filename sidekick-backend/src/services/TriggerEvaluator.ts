@@ -12,6 +12,7 @@ export type VisualTriggerReason =
   | 'off_course' // Previous check showed user not where expected
   | 'user_requested' // User explicitly asked "where am I"
   | 'navigation_start' // Beginning of navigation, confirm start position
+  | 'waypoint_verification' // Reached a waypoint, verify position before continuing
   | 'arrival_verification'; // Navigation completed, request a final verification photo
 
 /**

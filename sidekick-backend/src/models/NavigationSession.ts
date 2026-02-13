@@ -59,6 +59,14 @@ export interface NavigationSessionRuntime {
   pendingVisualRequest: boolean;
   startedAt: Date;
   lastUpdateAt: Date;
+  // Instruction deduplication — avoid repeating the same speech
+  lastSpokenInstruction: string;
+  lastInstructionAt: number; // timestamp ms
+  // Track total raw steps across all segments for reliable counting
+  totalRawSteps: number;
+  // Reference images per room (roomId → array of {compassHeading, imageData, locationTag})
+  // Populated at navigation start so advanceSegment can trigger visual verification
+  roomReferenceImages?: Map<string, Array<{ compassHeading: number; imageData: string; locationTag: string }>>;
 }
 
 // Database model (matches Prisma schema)

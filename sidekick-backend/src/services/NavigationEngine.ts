@@ -234,17 +234,19 @@ export class NavigationEngine {
   // In-memory active sessions
   private sessions: Map<string, NavigationSessionRuntime> = new Map();
 
-  private lastLowConfidenceVisualRequestAt: Map<string, number> = new Map();
-  private readonly MIN_LOW_CONFIDENCE_VISUAL_INTERVAL_MS = 15000;
+  // Kept for external access (websocket handlers) even though not used in this class
+  public readonly triggerEvaluator: TriggerEvaluator;
 
   constructor(
     private prisma: PrismaClient,
     private pathFinder: PathFinder,
     private positionTracker: PositionTracker,
     private directionTranslator: DirectionTranslator,
-    private triggerEvaluator: TriggerEvaluator,
+    triggerEvaluator: TriggerEvaluator,
     private visionClient: VisionClient
-  ) { }
+  ) {
+    this.triggerEvaluator = triggerEvaluator;
+  }
 
   /**
    * Starts a new navigation session
@@ -313,19 +315,22 @@ export class NavigationEngine {
       // Calculate path
       logger.log(`[NavigationEngine] Calculating path from ${startRoomId} to ${destinationRoomId}`);
 
-      // Collect all doorways (both directions)
-      const allDoorways: Doorway[] = [];
+      // Collect all doorways, deduplicating by ID.
+      // The DB already stores both forward (A→B) and reverse (B→A) doorways,
+      // so we just need to collect unique doorways — no manual reversing needed.
+      const doorwayMap = new Map<string, Doorway>();
       for (const room of flatMap.rooms) {
         if (room.doorways) {
-          allDoorways.push(...room.doorways);
+          for (const d of room.doorways) doorwayMap.set(d.id, d);
         }
         if (room.incomingDoorways) {
-          allDoorways.push(...room.incomingDoorways);
+          for (const d of room.incomingDoorways) doorwayMap.set(d.id, d);
         }
       }
+      const allDoorways: Doorway[] = Array.from(doorwayMap.values());
 
       logger.log(
-        `[NavigationEngine] Path inputs: rooms=${flatMap.rooms.length}, doorways=${allDoorways.length}`
+        `[NavigationEngine] Path inputs: rooms=${flatMap.rooms.length}, doorways=${allDoorways.length} (deduplicated)`
       );
 
       // Fallback: if room includes didn't bring doorways, fetch directly via Prisma
@@ -366,6 +371,15 @@ export class NavigationEngine {
         throw new Error('No path found (already at destination)');
       }
 
+      // Log the computed path for debugging
+      for (const seg of path) {
+        logger.log(
+          `[NavigationEngine] Segment ${seg.index}: ${seg.action} ` +
+          `${seg.fromRoomId.slice(0, 8)}→${seg.toRoomId.slice(0, 8)} ` +
+          `heading=${seg.compassHeading}° steps=${seg.distanceSteps}`
+        );
+      }
+
       // Calculate total distance and time
       const totalSteps = this.pathFinder.getTotalDistance(path);
       const estimatedSeconds = this.pathFinder.getEstimatedTime(path);
@@ -376,7 +390,7 @@ export class NavigationEngine {
           userId,
           flatMapId,
           destinationRoomId,
-          status: 'confirming_start',
+          status: 'navigating',
           pathJson: JSON.stringify(path),
           currentSegmentIndex: 0,
           currentRoomId: startRoomId,
@@ -391,12 +405,28 @@ export class NavigationEngine {
         },
       });
 
+      // Build reference image lookup: roomId → [{compassHeading, imageData, locationTag}]
+      const roomRefImages = new Map<string, Array<{ compassHeading: number; imageData: string; locationTag: string }>>();
+      for (const room of flatMap.rooms) {
+        if (room.referenceImages && room.referenceImages.length > 0) {
+          roomRefImages.set(
+            room.id,
+            room.referenceImages.map(img => ({
+              compassHeading: img.compassHeading,
+              imageData: img.imageData,
+              locationTag: img.locationTag,
+            }))
+          );
+        }
+      }
+      logger.log(`[NavigationEngine] Loaded reference images for ${roomRefImages.size} rooms`);
+
       // Create runtime session object
       const session: NavigationSessionRuntime = {
         id: dbSession.id,
         userId,
         flatMapId,
-        status: 'confirming_start',
+        status: 'navigating',
         destinationRoomId,
         path,
         currentSegmentIndex: 0,
@@ -414,6 +444,10 @@ export class NavigationEngine {
         pendingVisualRequest: false,
         startedAt: dbSession.startedAt,
         lastUpdateAt: dbSession.lastUpdateAt,
+        lastSpokenInstruction: '',
+        lastInstructionAt: 0,
+        totalRawSteps: 0,
+        roomReferenceImages: roomRefImages,
       };
 
       // Store in memory
@@ -439,14 +473,23 @@ export class NavigationEngine {
         },
       ];
 
-      // Create start position confirmation trigger
-      const startTrigger = this.triggerEvaluator.createStartTrigger(session);
-      messages.push({
-        type: 'request_visual',
-        payload: {
-          trigger: startTrigger,
-        },
-      });
+      // Also send an explicit instruction message so the mobile client
+      // gets targetHeading for the alignment coach immediately
+      if (firstInstruction && path[0]) {
+        messages.push({
+          type: 'instruction',
+          payload: {
+            speech: firstInstruction,
+            priority: 'high',
+            currentSegmentIndex: 0,
+            targetHeading: path[0].compassHeading,
+            stepsRemaining: path[0].distanceSteps,
+            totalStepsRemaining: totalSteps,
+            nextAction: path[1]?.action,
+            confidence: 1.0,
+          },
+        });
+      }
 
       logger.log(
         `[NavigationEngine] Navigation started: sessionId=${session.id}, pathSegments=${path.length}`
@@ -481,194 +524,144 @@ export class NavigationEngine {
     sessionId: string,
     payload: SensorUpdatePayload
   ): Promise<ServerMessage[]> {
+    // ── DIAGNOSTIC: log every sensor update so we can see what's arriving ──
+    const batchCount = payload.stepBatches?.length || 0;
+    const batchSteps = payload.stepBatches?.reduce((s, b) => s + (b?.steps || 0), 0) || 0;
+    logger.log(
+      `[NavigationEngine] SENSOR_UPDATE sessionId=${sessionId?.slice(0, 8)} ` +
+      `batches=${batchCount} batchSteps=${batchSteps} ` +
+      `stepsSinceLastUpdate=${payload.stepsSinceLastUpdate ?? 'N/A'} ` +
+      `heading=${Math.round(payload.currentHeading || payload.compassHeading || 0)}°`
+    );
+
     const session = this.sessions.get(sessionId);
     if (!session) {
+      logger.log(`[NavigationEngine] ⚠ Session NOT FOUND in memory: ${sessionId}`);
       return [
-        this.createErrorMessage(
-          sessionId,
-          'Session not found',
-          false
-        ),
+        this.createErrorMessage(sessionId, 'Session not found', false),
       ];
     }
 
-    // Skip if not in active navigation state
-    if (session.status !== 'navigating' && session.status !== 'confirming_start') {
-      logger.log(
-        `[NavigationEngine] Skipping sensor update for session ${sessionId} with status ${session.status}`
-      );
+    logger.log(
+      `[NavigationEngine] Session status=${session.status}, segment=${session.currentSegmentIndex}/${session.path.length}, ` +
+      `stepsInSeg=${Math.round(session.stepsTakenInSegment)}/${session.totalStepsInSegment}`
+    );
+
+    // ── 1. Gate: only process in active states ──
+    // Always allow awaiting_visual so Gemini latency doesn't freeze navigation
+    const activeStatuses: string[] = ['navigating', 'confirming_start', 'awaiting_visual'];
+    if (!activeStatuses.includes(session.status)) {
       return [];
     }
 
-    const messages: ServerMessage[] = [];
-
-    // Store previous position for progress checking
-    const previousPosition = { ...session.estimatedPosition };
-
-    // Compute expected segment heading (used to measure net progress)
-    const currentSegmentForProgress = session.path[session.currentSegmentIndex];
-    const expectedHeadingForProgress = currentSegmentForProgress?.compassHeading;
-
-    // Process step batches if provided (new format), otherwise use legacy format
-    let currentRawHeading = payload.currentHeading || payload.compassHeading || session.currentCompassHeading;
-    const currentHeading = this.positionTracker.normalizeHeading(currentRawHeading);
-
+    // ── 2. Count raw steps from this update ──
+    let newSteps = 0;
     if (payload.stepBatches && payload.stepBatches.length > 0) {
-      // New batch-based processing
-      const result = this.positionTracker.processStepBatches(
-        session.estimatedPosition,
-        payload.stepBatches
-      );
-
-      session.estimatedPosition = { x: result.x, y: result.y };
-
-      // Log for debugging
-      const net = this.positionTracker.getNetDisplacement(payload.stepBatches);
-      logger.log(
-        `[NavigationEngine] User ${session.userId}: +${result.totalSteps} steps, ` +
-        `net displacement: ${net.distance.toFixed(1)} steps, ` +
-        `position: (${result.x.toFixed(1)}, ${result.y.toFixed(1)})`
-      );
-
-      // Track absolute movement for confidence decay
-      session.absStepsSinceLastConfirm += result.totalSteps;
-
-      // Update steps taken in segment as NET progress toward expected segment heading
-      if (typeof expectedHeadingForProgress === 'number') {
-        let netProgress = 0;
-        for (const batch of payload.stepBatches) {
-          if (!batch || batch.steps <= 0) continue;
-
-          const h = this.positionTracker.normalizeHeading(batch.heading);
-          let diff = Math.abs(h - expectedHeadingForProgress);
-          if (diff > 180) diff = 360 - diff;
-
-          // Project steps onto expected heading.
-          // diff=0 => +steps, diff=180 => -steps, diff=90 => ~0
-          netProgress += batch.steps * Math.cos((diff * Math.PI) / 180);
-        }
-
-        session.stepsTakenInSegment += netProgress;
-      } else {
-        // Fallback: if no segment, behave like before
-        session.stepsTakenInSegment += result.totalSteps;
+      for (const batch of payload.stepBatches) {
+        if (batch && batch.steps > 0) newSteps += batch.steps;
       }
-    } else if (payload.stepsSinceLastUpdate !== undefined) {
-      // Legacy format - single step update
-      session.estimatedPosition = this.positionTracker.updatePosition(
-        session.estimatedPosition,
-        payload.stepsSinceLastUpdate,
-        payload.compassHeading || currentHeading
-      );
-
-      // Track absolute movement for confidence decay
-      if (payload.stepsSinceLastUpdate > 0) {
-        session.absStepsSinceLastConfirm += payload.stepsSinceLastUpdate;
-      }
-
-      // Update steps taken in segment
-      if (payload.totalStepsInSegment !== undefined) {
-        session.stepsTakenInSegment = payload.totalStepsInSegment;
-      } else {
-        if (typeof expectedHeadingForProgress === 'number') {
-          const h = this.positionTracker.normalizeHeading(payload.compassHeading || currentHeading);
-          let diff = Math.abs(h - expectedHeadingForProgress);
-          if (diff > 180) diff = 360 - diff;
-          session.stepsTakenInSegment += payload.stepsSinceLastUpdate * Math.cos((diff * Math.PI) / 180);
-        } else {
-          session.stepsTakenInSegment += payload.stepsSinceLastUpdate;
-        }
-      }
+    } else if (payload.stepsSinceLastUpdate !== undefined && payload.stepsSinceLastUpdate > 0) {
+      newSteps = payload.stepsSinceLastUpdate;
     }
 
-    // Update session state
+    // ── 3. Update heading ──
+    const currentRawHeading = payload.currentHeading || payload.compassHeading || session.currentCompassHeading;
+    const currentHeading = this.positionTracker.normalizeHeading(currentRawHeading);
     session.currentCompassHeading = currentHeading;
     session.lastUpdateAt = new Date();
 
-    // Calculate confidence decay
-    const secondsSinceConfirm = session.lastVisualConfirmAt
-      ? (Date.now() - session.lastVisualConfirmAt.getTime()) / 1000
-      : (Date.now() - session.startedAt.getTime()) / 1000;
-    const stepsSinceConfirm = session.absStepsSinceLastConfirm;
-
-    session.confidence = this.positionTracker.calculateConfidence(
-      session.confidence,
-      stepsSinceConfirm,
-      secondsSinceConfirm
-    );
-
-    // Check progress toward destination
-    const progressStatus = this.checkProgress(session, previousPosition);
-    if (progressStatus === 'wrong_way') {
-      logger.log(`[NavigationEngine] Warning: User may be going wrong way`);
-      // Could send a warning message here if needed
+    // ── 4. Auto-promote to navigating if user is walking ──
+    // Don't wait for Gemini — if user takes any steps, start navigating
+    if (newSteps > 0 && session.status !== 'navigating') {
+      logger.log(
+        `[NavigationEngine] Auto-promoting ${sessionId} from ${session.status} → navigating (${newSteps} steps detected)`
+      );
+      session.status = 'navigating';
+      session.pendingVisualRequest = false;
     }
 
-    // Check if segment is complete
-    if (session.stepsTakenInSegment >= session.totalStepsInSegment) {
+    // If no steps, just send a position update with heading (for alignment coach)
+    if (newSteps === 0) {
+      const currentSegment = session.path[session.currentSegmentIndex];
+      return [
+        {
+          type: 'position_update',
+          payload: {
+            confidence: session.confidence,
+            currentRoom: session.currentRoomId,
+          },
+        },
+        // Send targetHeading so mobile alignment coach works even when stationary
+        ...(currentSegment ? [{
+          type: 'instruction' as const,
+          payload: {
+            speech: '',
+            priority: 'low' as const,
+            currentSegmentIndex: session.currentSegmentIndex,
+            targetHeading: currentSegment.compassHeading,
+            stepsRemaining: Math.max(0, Math.round(currentSegment.distanceSteps - session.stepsTakenInSegment)),
+            totalStepsRemaining: this.calculateTotalStepsRemaining(session),
+            confidence: session.confidence,
+          },
+        }] : []),
+      ];
+    }
+
+    // ── 5. Simple raw step counting — no cosine projection ──
+    // Every step counts as 1 step of progress. Indoor compass is too noisy
+    // for projection to be reliable, especially on short segments.
+    session.stepsTakenInSegment += newSteps;
+    session.totalRawSteps += newSteps;
+    session.absStepsSinceLastConfirm += newSteps;
+
+    logger.log(
+      `[NavigationEngine] ${session.userId}: +${newSteps} steps, ` +
+      `segment ${session.currentSegmentIndex}: ${Math.round(session.stepsTakenInSegment)}/${session.totalStepsInSegment}, ` +
+      `heading: ${Math.round(currentHeading)}°`
+    );
+
+    const messages: ServerMessage[] = [];
+
+    // ── 6. Check segment completion — exact step match ──
+    // Use 100% of mapped steps so navigation matches the mapping experience exactly.
+    let segmentJustAdvanced = false;
+    const completionThreshold = Math.max(1, session.totalStepsInSegment);
+    if (session.stepsTakenInSegment >= completionThreshold) {
       logger.log(
-        `[NavigationEngine] Segment ${session.currentSegmentIndex} complete, advancing`
+        `[NavigationEngine] Segment ${session.currentSegmentIndex} complete ` +
+        `(${Math.round(session.stepsTakenInSegment)} >= ${completionThreshold}), advancing`
       );
       const advanceMessages = await this.advanceSegment(session);
       messages.push(...advanceMessages);
+      segmentJustAdvanced = true;
     }
 
-    // Check for checkpoint instructions
-    const checkpointMessage = this.checkCheckpoints(session, currentHeading);
-    if (checkpointMessage) {
-      messages.push(checkpointMessage);
-    }
+    // ── 7. Send silent position/heading update ──
+    // When advanceSegment fires, it already emits the HIGH priority turn instruction.
+    // We do NOT generate a second instruction here to avoid rapid double-speak.
+    // Only send a silent update with stepsRemaining so the UI stays current.
+    if (!segmentJustAdvanced && (session.status === 'navigating' || session.status === 'awaiting_visual')) {
+      const currentSegment = session.path[session.currentSegmentIndex];
+      if (currentSegment) {
+        const stepsRemaining = Math.max(0, Math.round(currentSegment.distanceSteps - session.stepsTakenInSegment));
 
-    // Check for visual triggers
-    const visualTrigger = this.triggerEvaluator.evaluate(session);
-    if (visualTrigger) {
-      if (
-        visualTrigger.reason === 'low_confidence' &&
-        !this.canRequestLowConfidenceVisual(session.id)
-      ) {
-        logger.log('[NavigationEngine] Skipping low_confidence visual trigger - rate limited');
-      } else {
-        if (visualTrigger.reason === 'low_confidence') {
-          this.lastLowConfidenceVisualRequestAt.set(session.id, Date.now());
-        }
-
-        session.pendingVisualRequest = true;
-        session.status = 'awaiting_visual';
-        messages.push({
-          type: 'request_visual',
-          payload: {
-            trigger: visualTrigger,
-          },
-        });
-        logger.log(
-          `[NavigationEngine] Visual trigger: ${visualTrigger.reason} (priority: ${visualTrigger.priority})`
-        );
-      }
-    } else {
-      // Generate current instruction if no visual needed
-      const instruction = this.generateCurrentInstruction(session, currentHeading);
-      if (instruction) {
-        const currentSegment = session.path[session.currentSegmentIndex];
-        const stepsRemaining = Math.max(0, currentSegment.distanceSteps - session.stepsTakenInSegment);
-        const nextSegment = session.path[session.currentSegmentIndex + 1];
-
+        // Silent update — no speech, just numeric state for the UI
         messages.push({
           type: 'instruction',
           payload: {
-            speech: instruction,
-            priority: 'normal',
+            speech: '',
+            priority: 'low',
             currentSegmentIndex: session.currentSegmentIndex,
             targetHeading: currentSegment.compassHeading,
             stepsRemaining,
             totalStepsRemaining: this.calculateTotalStepsRemaining(session),
-            nextAction: nextSegment?.action,
             confidence: session.confidence,
           },
         });
       }
     }
 
-    // Send position update
+    // ── 8. Position update ──
     messages.push({
       type: 'position_update',
       payload: {
@@ -677,66 +670,12 @@ export class NavigationEngine {
       },
     });
 
-    // Persist session
-    await this.persistSession(session);
+    // ── 9. Persist (fire-and-forget, don't block navigation) ──
+    this.persistSession(session).catch(err =>
+      logger.error(`[NavigationEngine] Persist error: ${err.message}`)
+    );
 
     return messages;
-  }
-
-  /**
-   * Check if user is making progress or going wrong way
-   * 
-   * @param session - Current navigation session
-   * @param previousPosition - Position before last update
-   * @returns 'on_track' | 'wrong_way' | 'stationary'
-   */
-  private checkProgress(
-    session: NavigationSessionRuntime,
-    previousPosition: { x: number; y: number }
-  ): 'on_track' | 'wrong_way' | 'stationary' {
-    const currentSegment = session.path[session.currentSegmentIndex];
-    if (!currentSegment) {
-      return 'on_track'; // No route step to compare
-    }
-
-    // Calculate target position for current segment
-    // For indoor navigation, we use the target room's position
-    // This is a simplified check - in practice, you'd get the target room position
-    // For now, we'll check if we're moving in the general direction of the segment heading
-
-    // Get the expected direction from the segment
-    const expectedHeading = currentSegment.compassHeading;
-    const currentHeading = session.currentCompassHeading;
-
-    // Calculate heading difference (0-180 degrees)
-    let headingDiff = Math.abs(currentHeading - expectedHeading);
-    if (headingDiff > 180) {
-      headingDiff = 360 - headingDiff;
-    }
-
-    // If heading is more than 90 degrees off, might be going wrong way
-    if (headingDiff > 90) {
-      // Check displacement toward a theoretical target
-      // For simplicity, assume target is 100 steps ahead in the expected direction
-      const targetRadians = ((90 - expectedHeading) * Math.PI) / 180;
-      const targetPosition = {
-        x: session.estimatedPosition.x + 100 * Math.cos(targetRadians),
-        y: session.estimatedPosition.y + 100 * Math.sin(targetRadians),
-      };
-
-      const displacement = this.positionTracker.calculateDisplacementTowardTarget(
-        previousPosition,
-        session.estimatedPosition,
-        targetPosition
-      );
-
-      // If we've moved more than 3 steps in wrong direction, warn
-      if (displacement < -3) {
-        return 'wrong_way';
-      }
-    }
-
-    return 'on_track';
   }
 
   /**
@@ -850,15 +789,49 @@ export class NavigationEngine {
         session.lastConfirmedRoomId = session.currentRoomId;
         session.absStepsSinceLastConfirm = 0;
 
-        // Update status if was confirming start
+        // ── Check if this was an arrival verification ──
+        // Arrival: all segments walked, session was awaiting visual at the end
+        const allSegmentsComplete = session.currentSegmentIndex >= session.path.length - 1
+          && session.stepsTakenInSegment >= session.totalStepsInSegment;
+
+        if (allSegmentsComplete) {
+          session.status = 'completed';
+          session.pendingVisualRequest = false;
+          await this.persistSession(session);
+
+          logger.log(`[NavigationEngine] ✓ Arrival verified & navigation complete: sessionId=${session.id}`);
+
+          messages.push({
+            type: 'visual_result',
+            payload: {
+              success: true,
+              isOnTrack: true,
+              confidence: session.confidence,
+              speech: visionResult.speech || 'Confirmed! This is your destination.',
+              action: 'continue',
+            },
+          });
+
+          messages.push({
+            type: 'navigation_complete',
+            payload: {
+              speech: visionResult.speech || 'You have reached your destination.',
+            },
+          });
+
+          return messages;
+        }
+
+        // ── Waypoint verification or other visual check — resume navigation ──
         if (session.status === 'confirming_start') {
           session.status = 'navigating';
         } else if (session.status === 'awaiting_visual') {
           session.status = 'navigating';
         }
 
-        // Generate next instruction
+        // Generate next turn instruction for the current segment
         const instruction = this.generateCurrentInstruction(session, payload.compassHeading);
+        const confirmSpeech = visionResult.speech || 'Verified.';
 
         messages.push({
           type: 'visual_result',
@@ -866,11 +839,12 @@ export class NavigationEngine {
             success: true,
             isOnTrack: true,
             confidence: session.confidence,
-            speech: visionResult.speech || 'Position confirmed. Continue.',
+            speech: confirmSpeech,
             action: 'continue',
           },
         });
 
+        // After waypoint verification, give the next direction instruction
         if (instruction) {
           const stepsRemaining = Math.max(
             0,
@@ -880,8 +854,9 @@ export class NavigationEngine {
             type: 'instruction',
             payload: {
               speech: instruction,
-              priority: 'normal',
+              priority: 'high',
               currentSegmentIndex: session.currentSegmentIndex,
+              targetHeading: currentSegment.compassHeading,
               stepsRemaining,
               totalStepsRemaining: this.calculateTotalStepsRemaining(session),
               confidence: session.confidence,
@@ -969,8 +944,6 @@ export class NavigationEngine {
     // Persist and remove from memory
     await this.persistSession(session);
     this.sessions.delete(sessionId);
-    this.lastLowConfidenceVisualRequestAt.delete(sessionId);
-
     console.log(`[NavigationEngine] Navigation cancelled: sessionId=${sessionId}`);
 
     return [
@@ -1133,6 +1106,9 @@ export class NavigationEngine {
         pendingVisualRequest: dbSession.pendingVisualRequest,
         startedAt: dbSession.startedAt,
         lastUpdateAt: dbSession.lastUpdateAt,
+        lastSpokenInstruction: '',
+        lastInstructionAt: 0,
+        totalRawSteps: 0,
       };
 
       // Store in memory for future access
@@ -1155,17 +1131,59 @@ export class NavigationEngine {
     session: NavigationSessionRuntime
   ): Promise<ServerMessage[]> {
     const nextIndex = session.currentSegmentIndex + 1;
+    const messages: ServerMessage[] = [];
 
-    // Check if navigation is complete (do not advance index past the end)
+    // ── Navigation complete? ──
     if (nextIndex >= session.path.length) {
-      session.status = 'completed';
-      session.pendingVisualRequest = true;
-      session.triggeredCheckpoints = [];
-      session.triggeredProximityAlerts = [];
+      // Check if destination room has reference images for arrival verification
+      const destRefImages = session.roomReferenceImages?.get(session.destinationRoomId);
+      if (destRefImages && destRefImages.length > 0) {
+        const refImg = destRefImages[0];
+        logger.log(
+          `[NavigationEngine] Destination ${session.destinationRoomId} has reference image ` +
+          `(heading=${refImg.compassHeading}°, tag="${refImg.locationTag}"). Requesting arrival verification.`
+        );
 
+        session.status = 'awaiting_visual';
+        session.pendingVisualRequest = true;
+
+        // Tell user to take a photo to confirm arrival
+        const clockDir = this.directionTranslator.clockToSpeech(
+          this.directionTranslator.compassToClock(refImg.compassHeading, session.currentCompassHeading)
+        );
+
+        messages.push({
+          type: 'request_visual',
+          payload: {
+            trigger: {
+              reason: 'arrival_verification',
+              priority: 'high',
+              message: `You've arrived! Please point your camera ${clockDir} and take a photo to confirm.`,
+              capture: {
+                mode: 'tap' as const,
+                delaySeconds: 0,
+                guidanceAudio: `Point your camera ${clockDir}`,
+                expectedHeading: refImg.compassHeading,
+              },
+              validation: {
+                query: 'validate_position' as const,
+                expectedRoom: session.destinationRoomId,
+                expectedLandmarks: [],
+                referenceImageId: null,
+              },
+            },
+          },
+        });
+
+        return messages;
+      }
+
+      // No reference image — just complete
+      session.status = 'completed';
+      session.pendingVisualRequest = false;
       await this.persistSession(session);
 
-      console.log(`[NavigationEngine] Navigation complete: sessionId=${session.id}`);
+      logger.log(`[NavigationEngine] ✓ Navigation complete: sessionId=${session.id}`);
 
       return [
         {
@@ -1174,60 +1192,106 @@ export class NavigationEngine {
             speech: 'You have reached your destination.',
           },
         },
-        {
-          type: 'request_visual',
-          payload: {
-            trigger: {
-              reason: 'arrival_verification',
-              priority: 'high',
-              message: 'Please take a verification photo.',
-              capture: {
-                mode: 'tap',
-                delaySeconds: 0,
-                guidanceAudio: 'Hold phone forward and take a photo',
-                expectedHeading: session.currentCompassHeading,
-              },
-              validation: {
-                query: 'validate_position',
-                expectedRoom: session.destinationRoomId,
-                expectedLandmarks: [],
-                referenceImageId: null,
-              },
-            },
-          },
-        },
       ];
     }
 
+    // ── Advance to next segment ──
+    const nextSegment = session.path[nextIndex];
+
     session.currentSegmentIndex = nextIndex;
     session.stepsTakenInSegment = 0;
+    session.totalStepsInSegment = nextSegment.distanceSteps;
+    session.currentRoomId = nextSegment.toRoomId;
     session.triggeredCheckpoints = [];
     session.triggeredProximityAlerts = [];
 
-    // Setup next segment
-    const nextSegment = session.path[session.currentSegmentIndex];
-    session.totalStepsInSegment = nextSegment.distanceSteps;
-    session.currentRoomId = nextSegment.toRoomId;
+    // Check if the waypoint we just arrived at has reference images (door, stairs, etc.)
+    // The "current" room after advancing is the segment's fromRoomId (the waypoint we reached)
+    const waypointRoomId = nextSegment.fromRoomId;
+    const waypointRefImages = session.roomReferenceImages?.get(waypointRoomId);
 
-    console.log(
-      `[NavigationEngine] Advanced to segment ${session.currentSegmentIndex}: ${nextSegment.action}`
+    if (waypointRefImages && waypointRefImages.length > 0) {
+      const refImg = waypointRefImages[0];
+      logger.log(
+        `[NavigationEngine] Waypoint ${waypointRoomId.slice(0, 8)} has reference image ` +
+        `(heading=${refImg.compassHeading}°, tag="${refImg.locationTag}"). Requesting verification.`
+      );
+
+      session.status = 'awaiting_visual';
+      session.pendingVisualRequest = true;
+
+      // Tell user to take a photo to verify the waypoint (door, stairs, etc.)
+      const clockDir = this.directionTranslator.clockToSpeech(
+        this.directionTranslator.compassToClock(refImg.compassHeading, session.currentCompassHeading)
+      );
+
+      messages.push({
+        type: 'request_visual',
+        payload: {
+          trigger: {
+            reason: 'waypoint_verification',
+            priority: 'high',
+            message: `You've reached a waypoint. Please point your camera ${clockDir} and take a photo to verify.`,
+            capture: {
+              mode: 'tap' as const,
+              delaySeconds: 0,
+              guidanceAudio: `Point your camera ${clockDir}`,
+              expectedHeading: refImg.compassHeading,
+            },
+            validation: {
+              query: 'validate_position' as const,
+              expectedRoom: waypointRoomId,
+              expectedLandmarks: [],
+              referenceImageId: null,
+            },
+          },
+        },
+      });
+
+      return messages;
+    }
+
+    // No reference image at waypoint — just give the turn instruction
+    const turnInstruction = this.directionTranslator.generateInstruction(
+      nextSegment.action,
+      nextSegment.compassHeading,
+      session.currentCompassHeading,
+      nextSegment.distanceSteps,
+      nextSegment.expectedLandmarks?.[0],
+      nextSegment.expectedLandmarks
     );
 
-    return [];
-  }
+    // Update dedup tracker so we don't immediately repeat this
+    session.lastSpokenInstruction = turnInstruction;
+    session.lastInstructionAt = Date.now();
 
-  private canRequestLowConfidenceVisual(sessionId: string): boolean {
-    const now = Date.now();
-    const last = this.lastLowConfidenceVisualRequestAt.get(sessionId) || 0;
-    return now - last >= this.MIN_LOW_CONFIDENCE_VISUAL_INTERVAL_MS;
+    logger.log(
+      `[NavigationEngine] Advanced to segment ${nextIndex}/${session.path.length - 1}: ` +
+      `"${turnInstruction}" (heading=${nextSegment.compassHeading}°, steps=${nextSegment.distanceSteps})`
+    );
+
+    // Emit the turn instruction with HIGH priority so it's always spoken
+    messages.push({
+      type: 'instruction',
+      payload: {
+        speech: turnInstruction,
+        priority: 'high',
+        currentSegmentIndex: session.currentSegmentIndex,
+        targetHeading: nextSegment.compassHeading,
+        stepsRemaining: nextSegment.distanceSteps,
+        totalStepsRemaining: this.calculateTotalStepsRemaining(session),
+        nextAction: session.path[nextIndex + 1]?.action,
+        confidence: session.confidence,
+      },
+    });
+
+    return messages;
   }
 
   /**
-   * Generates current navigation instruction
-   * 
-   * @param session - Current session
-   * @param userHeading - User's current compass heading
-   * @returns Instruction text or empty string
+   * Generates current navigation instruction for the active segment.
+   * Uses stepsRemaining (integer) so the speech text changes as user walks,
+   * enabling the dedup logic in processSensorUpdate to detect changes.
    */
   private generateCurrentInstruction(
     session: NavigationSessionRuntime,
@@ -1240,7 +1304,7 @@ export class NavigationEngine {
 
     const stepsRemaining = Math.max(
       0,
-      currentSegment.distanceSteps - session.stepsTakenInSegment
+      Math.round(currentSegment.distanceSteps - session.stepsTakenInSegment)
     );
 
     // Generate instruction using direction translator
@@ -1249,11 +1313,12 @@ export class NavigationEngine {
       currentSegment.compassHeading,
       userHeading,
       stepsRemaining,
-      currentSegment.expectedLandmarks[0] // Use first landmark if available
+      currentSegment.expectedLandmarks[0],
+      currentSegment.expectedLandmarks
     );
 
-    // Append preview of next action if close to end
-    if (stepsRemaining <= 3) {
+    // Append preview of next action if close to end of segment
+    if (stepsRemaining <= 2) {
       const nextSegment = session.path[session.currentSegmentIndex + 1];
       if (nextSegment) {
         const nextAction = this.directionTranslator.getTurnDirection(
@@ -1261,141 +1326,12 @@ export class NavigationEngine {
           nextSegment.compassHeading
         );
         return `${instruction}. Then ${nextAction}.`;
+      } else {
+        return `${instruction}. Almost there.`;
       }
     }
 
     return instruction;
-  }
-
-  /**
-   * Checks for checkpoint instructions
-   * 
-   * @param session - Current session
-   * @param userHeading - User's current compass heading
-   * @returns Instruction message or null
-   */
-  private checkCheckpoints(
-    session: NavigationSessionRuntime,
-    _userHeading: number
-  ): ServerMessage | null {
-    const currentSegment = session.path[session.currentSegmentIndex];
-    if (!currentSegment || !currentSegment.checkpoints) {
-      return null;
-    }
-
-    // Find checkpoint that should be triggered
-    for (const checkpoint of currentSegment.checkpoints) {
-      if (
-        checkpoint.atStep <= session.stepsTakenInSegment &&
-        !session.triggeredCheckpoints.includes(checkpoint.id)
-      ) {
-        // Mark as triggered
-        session.triggeredCheckpoints.push(checkpoint.id);
-
-        const stepsRemaining = Math.max(
-          0,
-          currentSegment.distanceSteps - session.stepsTakenInSegment
-        );
-
-        return {
-          type: 'instruction',
-          payload: {
-            speech: checkpoint.message,
-            priority: checkpoint.type === 'confirm' ? 'high' : 'normal',
-            currentSegmentIndex: session.currentSegmentIndex,
-            stepsRemaining,
-            totalStepsRemaining: this.calculateTotalStepsRemaining(session),
-            confidence: session.confidence,
-          },
-        };
-      }
-    }
-
-    // Proximity alerts (Spec: 15, 10, 5 steps)
-    const proximityAlert = this.checkProximityAlerts(session);
-    if (proximityAlert) {
-      return proximityAlert;
-    }
-
-    return null;
-  }
-
-  /**
-   * Checks for proximity alerts (15, 10, 5 steps)
-   */
-  private checkProximityAlerts(session: NavigationSessionRuntime): ServerMessage | null {
-    const currentSegment = session.path[session.currentSegmentIndex];
-    if (!currentSegment) return null;
-
-    const stepsRemaining = currentSegment.distanceSteps - session.stepsTakenInSegment;
-
-    // We only care about turns or room changes (walk segments shouldn't spam this?)
-    // Actually, the spec says "In about 15 steps, turn left". So it's about the NEXT segment's action.
-    const nextSegment = session.path[session.currentSegmentIndex + 1];
-    if (!nextSegment) {
-      // Last segment - check for destination arrival proximity (3 steps)
-      if (stepsRemaining === 3 && !session.triggeredProximityAlerts.includes('arrival_3')) {
-        session.triggeredProximityAlerts.push('arrival_3');
-        return {
-          type: 'instruction',
-          payload: {
-            speech: 'Destination on your right ahead', // Placeholder, should be smart
-            priority: 'normal',
-            currentSegmentIndex: session.currentSegmentIndex,
-            stepsRemaining: 3,
-            totalStepsRemaining: 3,
-            confidence: session.confidence,
-          },
-        };
-      }
-      return null;
-    }
-
-    // If next segment is a turn or room entry
-    const turnAction = nextSegment.action === 'turn' ? this.directionTranslator.getTurnDirection(currentSegment.compassHeading, nextSegment.compassHeading) : 'enter the room';
-
-    const thresholds = [15, 10, 5];
-    for (const t of thresholds) {
-      if (stepsRemaining <= t && !session.triggeredProximityAlerts.includes(`prox_${t}`)) {
-        session.triggeredProximityAlerts.push(`prox_${t}`);
-
-        let message = '';
-        if (t === 15) message = `In about 15 steps, ${turnAction}`;
-        if (t === 10) message = `10 steps, then ${turnAction}`;
-        if (t === 5) message = `${turnAction.charAt(0).toUpperCase() + turnAction.slice(1)} ahead`;
-
-        return {
-          type: 'instruction',
-          payload: {
-            speech: message,
-            priority: t === 5 ? 'high' : 'normal',
-            currentSegmentIndex: session.currentSegmentIndex,
-            stepsRemaining,
-            totalStepsRemaining: this.calculateTotalStepsRemaining(session),
-            confidence: session.confidence,
-          },
-        };
-      }
-    }
-
-    // Urgent turn signal at 0 steps
-    if (stepsRemaining <= 0 && !session.triggeredProximityAlerts.includes('prox_0')) {
-      session.triggeredProximityAlerts.push('prox_0');
-      const message = `${turnAction.charAt(0).toUpperCase() + turnAction.slice(1)} now`;
-      return {
-        type: 'instruction',
-        payload: {
-          speech: message,
-          priority: 'urgent',
-          currentSegmentIndex: session.currentSegmentIndex,
-          stepsRemaining: 0,
-          totalStepsRemaining: this.calculateTotalStepsRemaining(session),
-          confidence: session.confidence,
-        },
-      };
-    }
-
-    return null;
   }
 
   /**

@@ -342,6 +342,23 @@ export async function handleVisualSkipped(
     // Clear pending visual request
     session.pendingVisualRequest = false;
 
+    // Check if this was an arrival verification skip — complete navigation anyway
+    const allSegmentsComplete = session.currentSegmentIndex >= session.path.length - 1
+      && session.stepsTakenInSegment >= session.totalStepsInSegment;
+
+    if (allSegmentsComplete) {
+      (session as any).status = 'completed';
+      logger.log(`[WS] Visual skipped at destination — completing navigation anyway`);
+      return [
+        {
+          type: 'navigation_complete',
+          payload: {
+            speech: 'You have reached your destination.',
+          },
+        },
+      ];
+    }
+
     // Resume navigation state so sensor updates continue to be processed
     if ((session as any).status === 'awaiting_visual' || (session as any).status === 'confirming_start') {
       (session as any).status = 'navigating';
@@ -350,18 +367,22 @@ export async function handleVisualSkipped(
     // Decrease confidence slightly
     session.confidence = Math.max(0.3, session.confidence - 0.1);
 
-    // Persist session
-    // Note: NavigationEngine should have a method to update session, but for now we'll just return instruction
+    // Generate the actual next instruction for the current segment
+    const currentSegment = session.path[session.currentSegmentIndex];
+    const stepsRemaining = currentSegment
+      ? Math.max(0, Math.round(currentSegment.distanceSteps - session.stepsTakenInSegment))
+      : 0;
 
     return [
       {
         type: 'instruction',
         payload: {
-          speech: 'Continuing navigation. If you need help, just ask.',
-          priority: 'normal',
+          speech: 'Skipped. Continuing navigation.',
+          priority: 'high',
           currentSegmentIndex: session.currentSegmentIndex,
-          stepsRemaining: 0,
-          totalStepsRemaining: 0,
+          targetHeading: currentSegment?.compassHeading,
+          stepsRemaining,
+          totalStepsRemaining: stepsRemaining, // simplified
           confidence: session.confidence,
         },
       },
