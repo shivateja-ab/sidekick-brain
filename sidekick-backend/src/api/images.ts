@@ -261,13 +261,16 @@ export default async function imageRoutes(fastify: FastifyInstance) {
         if (client) {
           try {
             request.log.info(`[Images] Calling Vision API for image analysis`);
-            const visionResult = await client.identifyRoom(imageData);
+            const visionResult = await client.extractFeatures(imageData);
 
             if (visionResult.success) {
-              description = visionResult.speech || null;
-              // Extract landmarks from keyFeatures if available
-              if (visionResult.keyFeatures && visionResult.keyFeatures.length > 0) {
-                detectedLandmarks = visionResult.keyFeatures;
+              // Map 'summary' to description
+              description = (visionResult as any).summary || visionResult.speech || null;
+
+              // Map 'distinctiveFeatures' to detectedLandmarks
+              const features = (visionResult as any).distinctiveFeatures || visionResult.keyFeatures;
+              if (features && features.length > 0) {
+                detectedLandmarks = features;
               }
             }
           } catch (visionError) {

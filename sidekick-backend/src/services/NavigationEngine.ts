@@ -20,6 +20,7 @@ interface VisionClient {
     context: {
       expectedRoom: string;
       expectedLandmarks: string[];
+      expectedFeaturePrompt?: string;
       compassHeading: number;
     }
   ): Promise<{
@@ -732,6 +733,7 @@ export class NavigationEngine {
     console.log(`[NavigationEngine] Calling Vision API for session ${sessionId}`);
     try {
       let referenceImage = payload.referenceImage;
+      let expectedFeaturePrompt = '';
 
       // If client didn't provide a reference image, try to fetch one from DB
       if (!referenceImage || referenceImage.trim().length === 0) {
@@ -745,11 +747,27 @@ export class NavigationEngine {
             },
             select: {
               imageData: true,
+              description: true,
+              detectedLandmarks: true,
             },
           });
 
           if (dbImage?.imageData) {
             referenceImage = dbImage.imageData;
+
+            // Construct prompt from stored analysis
+            const parts = [];
+            if (dbImage.description) parts.push(dbImage.description);
+            if (dbImage.detectedLandmarks) {
+              try {
+                const landmarks = JSON.parse(dbImage.detectedLandmarks);
+                if (Array.isArray(landmarks)) {
+                  parts.push(`Features: ${landmarks.join(', ')}`);
+                }
+              } catch (e) { }
+            }
+            expectedFeaturePrompt = parts.join('. ');
+
             console.log(
               `[NavigationEngine] Using reference image from DB for room ${session.currentRoomId}`
             );
@@ -769,6 +787,7 @@ export class NavigationEngine {
         {
           expectedRoom: session.currentRoomId,
           expectedLandmarks: currentSegment.expectedLandmarks,
+          expectedFeaturePrompt: expectedFeaturePrompt || currentSegment.instruction, // Fallback to instruction if no image analysis
           compassHeading: payload.compassHeading,
         }
       );
@@ -1144,6 +1163,7 @@ export class NavigationEngine {
           `(heading=${refImg.compassHeading}°, tag="${refImg.locationTag}"). Requesting arrival verification.`
         );
 
+        session.currentRoomId = session.destinationRoomId;
         session.status = 'awaiting_visual';
         session.pendingVisualRequest = true;
 
@@ -1201,7 +1221,7 @@ export class NavigationEngine {
     session.currentSegmentIndex = nextIndex;
     session.stepsTakenInSegment = 0;
     session.totalStepsInSegment = nextSegment.distanceSteps;
-    session.currentRoomId = nextSegment.toRoomId;
+    session.currentRoomId = nextSegment.fromRoomId;
     session.triggeredCheckpoints = [];
     session.triggeredProximityAlerts = [];
 

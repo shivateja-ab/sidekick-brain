@@ -3,9 +3,10 @@
  */
 import { logger } from '../utils/logger.js';
 export interface VisionContext {
-  query: 'validate_position' | 'identify_room' | 'check_obstacles';
+  query: 'validate_position' | 'identify_room' | 'check_obstacles' | 'extract_features';
   expectedRoom?: string;
   expectedLandmarks?: string[];
+  expectedFeaturePrompt?: string; // Specific visual description from reference image
   currentInstruction?: string;
   stepsIntoSegment?: number;
 }
@@ -212,6 +213,23 @@ export class VisionClient {
       currentImage: image,
       context: {
         query: 'check_obstacles',
+      },
+    });
+  }
+
+  /**
+   * Extracts distinctive features from a reference image
+   * 
+   * Used during mapping to analyze what makes a location recognizable.
+   * 
+   * @param image - Base64 encoded JPEG of reference view
+   * @returns VisionResponse with feature list and summary
+   */
+  async extractFeatures(image: string): Promise<VisionResponse> {
+    return this.sendRequest({
+      currentImage: image,
+      context: {
+        query: 'extract_features',
       },
     });
   }
