@@ -555,8 +555,7 @@ export class NavigationEngine {
     );
 
     // ── 1. Gate: only process in active states ──
-    // Always allow awaiting_visual so Gemini latency doesn't freeze navigation
-    const activeStatuses: string[] = ['navigating', 'confirming_start', 'awaiting_visual'];
+    const activeStatuses: string[] = ['navigating', 'confirming_start', 'awaiting_visual', 'recalculating'];
     if (!activeStatuses.includes(session.status)) {
       return [];
     }
@@ -677,7 +676,23 @@ export class NavigationEngine {
       },
     });
 
-    // ── 9. Persist (fire-and-forget, don't block navigation) ──
+    // ── 9. Proactive visual triggers ──
+    // Check if we should request visual confirmation (e.g., approaching turn)
+    // SKIP if we just advanced segments to give user time to hear the walk instruction
+    if (session.status === 'navigating' && !session.pendingVisualRequest && !segmentJustAdvanced) {
+      const trigger = this.triggerEvaluator.evaluate(session as any);
+      if (trigger) {
+        logger.log(`[NavigationEngine] TriggerEvaluator requested visual: reason=${trigger.reason}`);
+        session.status = 'awaiting_visual';
+        session.pendingVisualRequest = true;
+        messages.push({
+          type: 'request_visual',
+          payload: { trigger },
+        });
+      }
+    }
+
+    // ── 10. Persist (fire-and-forget, don't block navigation) ──
     this.persistSession(session).catch(err =>
       logger.error(`[NavigationEngine] Persist error: ${err.message}`)
     );
@@ -798,16 +813,36 @@ export class NavigationEngine {
         }
       );
 
+      // Heuristic: If speech is definitively positive, override isOnTrack
+      if (!visionResult.isOnTrack && visionResult.success) {
+        const lowerSpeech = (visionResult.speech || '').toLowerCase();
+        const definitivelyPositive =
+          lowerSpeech.includes('location confirmed') ||
+          lowerSpeech.includes('position confirmed') ||
+          lowerSpeech.includes('perfect match') ||
+          lowerSpeech.includes('correctly positioned') ||
+          lowerSpeech.includes('you are at') ||
+          lowerSpeech.includes('exactly where you should be') ||
+          lowerSpeech.includes('verified') ||
+          lowerSpeech.includes('matched');
+
+        if (definitivelyPositive && (visionResult.confidence || 0) > 0.7) {
+          console.log(`[NavigationEngine] Vision speech is positive but isOnTrack=false. Overriding to TRUE.`);
+          visionResult.isOnTrack = true;
+          // Ensure confidence is high for the reset logic below
+          visionResult.confidence = Math.max(visionResult.confidence || 0.9, 0.95);
+        }
+      }
+
       if (visionResult.success && visionResult.isOnTrack) {
         // Success - user is on track
+        const confToReset = visionResult.confidence !== undefined ? visionResult.confidence : 1.0;
         console.log(
-          `[NavigationEngine] Visual confirmation successful: confidence=${visionResult.confidence}`
+          `[NavigationEngine] Visual confirmation successful: confidence=${confToReset}`
         );
 
         // Reset confidence
-        if (visionResult.confidence !== undefined) {
-          session.confidence = this.positionTracker.resetConfidence(visionResult.confidence);
-        }
+        session.confidence = this.positionTracker.resetConfidence(confToReset);
 
         // Update confirmation tracking
         session.lastVisualConfirmAt = new Date();
@@ -916,7 +951,7 @@ export class NavigationEngine {
             type: 'instruction',
             payload: {
               speech: instruction,
-              priority: 'high',
+              priority: 'urgent',
               currentSegmentIndex: session.currentSegmentIndex,
               targetHeading: currentSegment.compassHeading,
               stepsRemaining,
@@ -924,6 +959,18 @@ export class NavigationEngine {
               confidence: session.confidence,
             },
           });
+        }
+
+        // ── 8. Immediate Segment Advancement — check if we should move to next segment ──
+        // If the user was walking during vision analysis, they might have finished this segment.
+        const completionThreshold = Math.max(1, session.totalStepsInSegment);
+        if (session.stepsTakenInSegment >= completionThreshold) {
+          logger.log(
+            `[NavigationEngine] After visual, segment ${session.currentSegmentIndex} is complete ` +
+            `(${Math.round(session.stepsTakenInSegment)} >= ${completionThreshold}), advancing now.`
+          );
+          const advanceMessages = await this.advanceSegment(session);
+          messages.push(...advanceMessages);
         }
       } else if (visionResult.success && !visionResult.isOnTrack) {
         // User is off course
@@ -951,6 +998,7 @@ export class NavigationEngine {
         });
 
         // TODO: Attempt to identify room and recalculate path
+        console.log(`[NavigationEngine] User off course, staying in recalculating for now.`);
       } else {
         // Vision API call failed
         console.log(
@@ -1238,6 +1286,9 @@ export class NavigationEngine {
           },
         });
 
+        // Persist state change before waiting for visual
+        await this.persistSession(session);
+
         return messages;
       }
 
@@ -1311,6 +1362,9 @@ export class NavigationEngine {
         },
       });
 
+      // Persist state change (index advanced) before waiting for visual
+      await this.persistSession(session);
+
       return messages;
     }
 
@@ -1333,12 +1387,12 @@ export class NavigationEngine {
       `"${turnInstruction}" (heading=${nextSegment.compassHeading}°, steps=${nextSegment.distanceSteps})`
     );
 
-    // Emit the turn instruction with HIGH priority so it's always spoken
+    // Emit the turn instruction with URGENT priority so it's always spoken and bypasses delays
     messages.push({
       type: 'instruction',
       payload: {
         speech: turnInstruction,
-        priority: 'high',
+        priority: 'urgent',
         currentSegmentIndex: session.currentSegmentIndex,
         targetHeading: nextSegment.compassHeading,
         stepsRemaining: nextSegment.distanceSteps,
