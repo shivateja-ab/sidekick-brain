@@ -106,6 +106,7 @@ export class PathFinder {
         toRoomId: doorway.toRoomId,
         compassHeading: doorway.compassHeading,
         distanceSteps: doorway.distanceSteps,
+        doorwayType: doorway.type,
         instruction: '',
         expectedLandmarks: landmarks,
         checkpoints: [],

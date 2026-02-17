@@ -25,6 +25,7 @@ export interface PathSegment {
   compassHeading: number;      // Absolute direction to travel
   distanceSteps: number;
   instruction: string;         // Generated at runtime with clock positions
+  doorwayType?: string;        // Type of the doorway (door, archway, etc.) for descriptive actions
   expectedLandmarks: string[];
   checkpoints: Checkpoint[];
 }
@@ -66,7 +67,12 @@ export interface NavigationSessionRuntime {
   totalRawSteps: number;
   // Reference images per room (roomId → array of {compassHeading, imageData, locationTag})
   // Populated at navigation start so advanceSegment can trigger visual verification
-  roomReferenceImages?: Map<string, Array<{ compassHeading: number; imageData: string; locationTag: string }>>;
+  roomReferenceImages?: Map<string, Array<{
+    compassHeading: number;
+    imageData: string;
+    locationTag: string;
+    actionDescription?: string | null;
+  }>>;
 }
 
 // Database model (matches Prisma schema)

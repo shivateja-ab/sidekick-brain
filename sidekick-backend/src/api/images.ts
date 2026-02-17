@@ -255,6 +255,7 @@ export default async function imageRoutes(fastify: FastifyInstance) {
 
         // Optionally call Vision API to get description and landmarks
         let description: string | null = null;
+        let actionDescription: string | null = null;
         let detectedLandmarks: string[] | null = null;
 
         const client = getVisionClient();
@@ -266,6 +267,9 @@ export default async function imageRoutes(fastify: FastifyInstance) {
             if (visionResult.success) {
               // Map 'summary' to description
               description = (visionResult as any).summary || visionResult.speech || null;
+
+              // Map 'actionDescription'
+              actionDescription = (visionResult as any).actionDescription || null;
 
               // Map 'distinctiveFeatures' to detectedLandmarks
               const features = (visionResult as any).distinctiveFeatures || visionResult.keyFeatures;
@@ -287,6 +291,7 @@ export default async function imageRoutes(fastify: FastifyInstance) {
             compassHeading,
             imageData,
             description,
+            actionDescription,
             detectedLandmarks: detectedLandmarks ? JSON.stringify(detectedLandmarks) : null,
           },
         });
@@ -298,6 +303,7 @@ export default async function imageRoutes(fastify: FastifyInstance) {
           locationTag: image.locationTag,
           compassHeading: image.compassHeading,
           description: image.description,
+          actionDescription: image.actionDescription,
           detectedLandmarks: image.detectedLandmarks
             ? JSON.parse(image.detectedLandmarks)
             : null,

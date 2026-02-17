@@ -406,8 +406,13 @@ export class NavigationEngine {
         },
       });
 
-      // Build reference image lookup: roomId → [{compassHeading, imageData, locationTag}]
-      const roomRefImages = new Map<string, Array<{ compassHeading: number; imageData: string; locationTag: string }>>();
+      // Build reference image lookup: roomId → [{compassHeading, imageData, locationTag, actionDescription}]
+      const roomRefImages = new Map<string, Array<{
+        compassHeading: number;
+        imageData: string;
+        locationTag: string;
+        actionDescription: string | null;
+      }>>();
       for (const room of flatMap.rooms) {
         if (room.referenceImages && room.referenceImages.length > 0) {
           roomRefImages.set(
@@ -416,6 +421,7 @@ export class NavigationEngine {
               compassHeading: img.compassHeading,
               imageData: img.imageData,
               locationTag: img.locationTag,
+              actionDescription: (img as any).actionDescription,
             }))
           );
         }
@@ -850,7 +856,44 @@ export class NavigationEngine {
 
         // Generate next turn instruction for the current segment
         const instruction = this.generateCurrentInstruction(session, payload.compassHeading);
-        const confirmSpeech = visionResult.speech || 'Verified.';
+
+        // Add descriptive action: prefer AI-generated description from reference image, fall back to doorway type
+        let additionalAction = '';
+
+        // Try to find action description from loaded reference images
+        const refImages = session.roomReferenceImages?.get(session.currentRoomId);
+        if (refImages) {
+          // Find the image that likely matches this verification (closest heading)
+          // Simple approximation: find image within 45 degrees
+          const match = refImages.find((img: { compassHeading: number; actionDescription?: string | null }) => {
+            const diff = Math.abs(img.compassHeading - payload.compassHeading);
+            return diff <= 45 || diff >= 315;
+          });
+
+          if (match && match.actionDescription) {
+            additionalAction = ` ${match.actionDescription}`;
+          }
+        }
+
+        // Fallback to static doorway type logic if no AI description found
+        if (!additionalAction && currentSegment.doorwayType) {
+          switch (currentSegment.doorwayType) {
+            case 'door':
+              additionalAction = ' Open the door.';
+              break;
+            case 'archway':
+              additionalAction = ' Go through the archway.';
+              break;
+            case 'stairs':
+              additionalAction = ' Climb the stairs carefully.';
+              break;
+            case 'opening':
+              additionalAction = ' Go through the opening.';
+              break;
+          }
+        }
+
+        const confirmSpeech = (visionResult.speech || 'Verified.') + additionalAction;
 
         messages.push({
           type: 'visual_result',

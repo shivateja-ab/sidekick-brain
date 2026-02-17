@@ -116,6 +116,7 @@ model ReferenceImage {
   
   // Gemini-generated during setup
   description       String?
+  actionDescription String? // "Open the door", "Climb stairs", etc.
   detectedLandmarks String? // JSON array of strings
   
   capturedAt DateTime @default(now())
