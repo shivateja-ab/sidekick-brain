@@ -249,6 +249,10 @@ export class NavigationEngine {
     this.triggerEvaluator = triggerEvaluator;
   }
 
+  private isRefImageDebugEnabled(): boolean {
+    return process.env.REF_IMAGE_DEBUG === '1';
+  }
+
   /**
    * Starts a new navigation session
    * 
@@ -461,7 +465,7 @@ export class NavigationEngine {
       this.sessions.set(session.id, session);
 
       // Generate first instruction
-      const firstInstruction = this.generateCurrentInstruction(session, currentHeading);
+      const firstInstruction = await this.generateCurrentInstruction(session, currentHeading);
 
       // Create messages
       const messages: ServerMessage[] = [
@@ -756,6 +760,14 @@ export class NavigationEngine {
       let referenceImage = payload.referenceImage;
       let expectedFeaturePrompt = '';
 
+      if (this.isRefImageDebugEnabled()) {
+        const curLen = typeof payload.currentImage === 'string' ? payload.currentImage.length : 0;
+        const refLen = typeof payload.referenceImage === 'string' ? payload.referenceImage.length : 0;
+        logger.log(
+          `[NavigationEngine][REF_IMAGE_DEBUG] visual_response session=${sessionId} room=${session.currentRoomId} seg=${session.currentSegmentIndex} currentImageLen=${curLen} referenceImageLen=${refLen}`
+        );
+      }
+
       // If client didn't provide a reference image, try to fetch one from DB
       if (!referenceImage || referenceImage.trim().length === 0) {
         try {
@@ -775,6 +787,12 @@ export class NavigationEngine {
 
           if (dbImage?.imageData) {
             referenceImage = dbImage.imageData;
+
+            if (this.isRefImageDebugEnabled()) {
+              logger.log(
+                `[NavigationEngine][REF_IMAGE_DEBUG] Loaded reference image from DB room=${session.currentRoomId} refLen=${dbImage.imageData.length}`
+              );
+            }
 
             // Construct prompt from stored analysis
             const parts = [];
@@ -802,6 +820,13 @@ export class NavigationEngine {
         }
       }
 
+      if (this.isRefImageDebugEnabled()) {
+        const finalRefLen = typeof referenceImage === 'string' ? referenceImage.length : 0;
+        logger.log(
+          `[NavigationEngine][REF_IMAGE_DEBUG] Calling validatePosition session=${sessionId} expectedRoom=${session.currentRoomId} finalReferenceImageLen=${finalRefLen}`
+        );
+      }
+
       const visionResult = await this.visionClient.validatePosition(
         payload.currentImage,
         referenceImage,
@@ -812,6 +837,12 @@ export class NavigationEngine {
           compassHeading: payload.compassHeading,
         }
       );
+
+      if (this.isRefImageDebugEnabled()) {
+        logger.log(
+          `[NavigationEngine][REF_IMAGE_DEBUG] Vision result session=${sessionId} success=${visionResult.success} isOnTrack=${visionResult.isOnTrack} confidence=${visionResult.confidence}`
+        );
+      }
 
       // Heuristic: If speech is definitively positive, override isOnTrack
       if (!visionResult.isOnTrack && visionResult.success) {
@@ -859,23 +890,31 @@ export class NavigationEngine {
           session.pendingVisualRequest = false;
           await this.persistSession(session);
 
+          const arrival = await this.buildArrivalSpeech(session);
           logger.log(`[NavigationEngine] ✓ Arrival verified & navigation complete: sessionId=${session.id}`);
 
+          // visual_result with minimal speech (phase transition only)
           messages.push({
             type: 'visual_result',
             payload: {
               success: true,
               isOnTrack: true,
               confidence: session.confidence,
-              speech: visionResult.speech || 'Confirmed! This is your destination.',
+              speech: '',
               action: 'continue',
             },
           });
 
+          // Combine Gemini description + arrival confirmation + success into one spoken message
+          const geminiDesc = visionResult.speech || '';
+          const fullArrivalSpeech = geminiDesc
+            ? `${geminiDesc} ${arrival.confirmSpeech} ${arrival.completeSpeech}`
+            : `${arrival.confirmSpeech} ${arrival.completeSpeech}`;
+
           messages.push({
             type: 'navigation_complete',
             payload: {
-              speech: visionResult.speech || 'You have reached your destination.',
+              speech: fullArrivalSpeech,
             },
           });
 
@@ -883,52 +922,66 @@ export class NavigationEngine {
         }
 
         // ── Waypoint verification or other visual check — resume navigation ──
-        if (session.status === 'confirming_start') {
-          session.status = 'navigating';
-        } else if (session.status === 'awaiting_visual') {
+        // Guard: we must always exit awaiting_visual after a successful confirmation.
+        // Otherwise the session can get stuck and future sensor updates won't advance segments.
+        if (session.status === 'confirming_start' || session.status === 'awaiting_visual') {
           session.status = 'navigating';
         }
 
-        // Generate next turn instruction for the current segment
-        const instruction = this.generateCurrentInstruction(session, payload.compassHeading);
+        // === Build ONE combined spoken message for waypoint confirmation ===
+        // Pattern: "Verified. [door action]. Walk 20 steps to Trashroom."
 
-        // Add descriptive action: prefer AI-generated description from reference image, fall back to doorway type
-        let additionalAction = '';
+        // 1. Gemini's confirmation
+        let fullSpeech = visionResult.speech || 'Verified.';
 
-        // Try to find action description from loaded reference images
+        // 2. Doorway action from AI description or doorway type
         const refImages = session.roomReferenceImages?.get(session.currentRoomId);
+        let doorwayAction = '';
         if (refImages) {
-          // Find the image that likely matches this verification (closest heading)
-          // Simple approximation: find image within 45 degrees
           const match = refImages.find((img: { compassHeading: number; actionDescription?: string | null }) => {
             const diff = Math.abs(img.compassHeading - payload.compassHeading);
             return diff <= 45 || diff >= 315;
           });
-
-          if (match && match.actionDescription) {
-            additionalAction = ` ${match.actionDescription}`;
-          }
+          if (match?.actionDescription) doorwayAction = match.actionDescription;
         }
-
-        // Fallback to static doorway type logic if no AI description found
-        if (!additionalAction && currentSegment.doorwayType) {
+        if (!doorwayAction && currentSegment.doorwayType) {
           switch (currentSegment.doorwayType) {
-            case 'door':
-              additionalAction = ' Open the door.';
-              break;
-            case 'archway':
-              additionalAction = ' Go through the archway.';
-              break;
-            case 'stairs':
-              additionalAction = ' Climb the stairs carefully.';
-              break;
-            case 'opening':
-              additionalAction = ' Go through the opening.';
-              break;
+            case 'door': doorwayAction = 'Open the door and go through'; break;
+            case 'archway': doorwayAction = 'Go through the archway'; break;
+            case 'stairs': doorwayAction = 'Take the stairs carefully'; break;
+            case 'opening': doorwayAction = 'Go through the opening'; break;
           }
         }
+        if (doorwayAction) fullSpeech += ` ${doorwayAction}.`;
 
-        const confirmSpeech = (visionResult.speech || 'Verified.') + additionalAction;
+        // 3. Simple walking direction (without repeating doorway action)
+        const stepsLeft = Math.max(0, Math.round(
+          currentSegment.distanceSteps - session.stepsTakenInSegment
+        ));
+        const clock = this.directionTranslator.compassToClock(
+          currentSegment.compassHeading, payload.compassHeading
+        );
+        const walkDir = this.directionTranslator.clockToSpeech(clock);
+
+        // Look up where we're heading
+        let toRoomName: string | undefined;
+        try {
+          const toRoom = await this.prisma.room.findUnique({
+            where: { id: currentSegment.toRoomId },
+            select: { name: true },
+          });
+          if (toRoom?.name && !toRoom.name.toLowerCase().startsWith('waypoint')) {
+            toRoomName = toRoom.name;
+          }
+        } catch { /* ignore */ }
+
+        if (stepsLeft > 0) {
+          fullSpeech += ` Walk ${walkDir}, about ${stepsLeft} step${stepsLeft !== 1 ? 's' : ''}`;
+          if (toRoomName) fullSpeech += ` to ${toRoomName}`;
+          fullSpeech += '.';
+        } else if (toRoomName) {
+          fullSpeech += ` Continue ${walkDir} to ${toRoomName}.`;
+        }
 
         messages.push({
           type: 'visual_result',
@@ -936,30 +989,28 @@ export class NavigationEngine {
             success: true,
             isOnTrack: true,
             confidence: session.confidence,
-            speech: confirmSpeech,
+            speech: fullSpeech,
             action: 'continue',
           },
         });
 
-        // After waypoint verification, give the next direction instruction
-        if (instruction) {
-          const stepsRemaining = Math.max(
-            0,
-            currentSegment.distanceSteps - session.stepsTakenInSegment
-          );
-          messages.push({
-            type: 'instruction',
-            payload: {
-              speech: instruction,
-              priority: 'urgent',
-              currentSegmentIndex: session.currentSegmentIndex,
-              targetHeading: currentSegment.compassHeading,
-              stepsRemaining,
-              totalStepsRemaining: this.calculateTotalStepsRemaining(session),
-              confidence: session.confidence,
-            },
-          });
-        }
+        // Send a silent instruction so the UI updates stepsRemaining/targetHeading
+        const stepsRemaining = Math.max(
+          0,
+          currentSegment.distanceSteps - session.stepsTakenInSegment
+        );
+        messages.push({
+          type: 'instruction',
+          payload: {
+            speech: '',
+            priority: 'low',
+            currentSegmentIndex: session.currentSegmentIndex,
+            targetHeading: currentSegment.compassHeading,
+            stepsRemaining,
+            totalStepsRemaining: this.calculateTotalStepsRemaining(session),
+            confidence: session.confidence,
+          },
+        });
 
         // ── 8. Immediate Segment Advancement — check if we should move to next segment ──
         // If the user was walking during vision analysis, they might have finished this segment.
@@ -1126,7 +1177,7 @@ export class NavigationEngine {
     await this.persistSession(session);
 
     // Generate current instruction
-    const instruction = this.generateCurrentInstruction(
+    const instruction = await this.generateCurrentInstruction(
       session,
       session.currentCompassHeading
     );
@@ -1258,6 +1309,16 @@ export class NavigationEngine {
         session.status = 'awaiting_visual';
         session.pendingVisualRequest = true;
 
+        // Get destination name for the spoken message
+        let destName = 'your destination';
+        try {
+          const destRoom = await this.prisma.room.findUnique({
+            where: { id: session.destinationRoomId },
+            select: { name: true },
+          });
+          if (destRoom) destName = destRoom.name;
+        } catch { /* use fallback */ }
+
         // Tell user to take a photo to confirm arrival
         const clockDir = this.directionTranslator.clockToSpeech(
           this.directionTranslator.compassToClock(refImg.compassHeading, session.currentCompassHeading)
@@ -1269,7 +1330,7 @@ export class NavigationEngine {
             trigger: {
               reason: 'arrival_verification',
               priority: 'high',
-              message: `You've arrived! Please point your camera ${clockDir} and take a photo to confirm.`,
+              message: `You should be at ${destName}. Please point your camera ${clockDir} and take a photo so I can confirm.`,
               capture: {
                 mode: 'tap' as const,
                 delaySeconds: 0,
@@ -1292,18 +1353,20 @@ export class NavigationEngine {
         return messages;
       }
 
-      // No reference image — just complete
+      // No reference image — complete with descriptive arrival
       session.status = 'completed';
       session.pendingVisualRequest = false;
       await this.persistSession(session);
 
+      const arrival = await this.buildArrivalSpeech(session);
       logger.log(`[NavigationEngine] ✓ Navigation complete: sessionId=${session.id}`);
 
+      // Single message combining confirmation + success so speech doesn't get cut off
       return [
         {
           type: 'navigation_complete',
           payload: {
-            speech: 'You have reached your destination.',
+            speech: `${arrival.confirmSpeech} ${arrival.completeSpeech}`,
           },
         },
       ];
@@ -1334,10 +1397,21 @@ export class NavigationEngine {
       session.status = 'awaiting_visual';
       session.pendingVisualRequest = true;
 
-      // Tell user to take a photo to verify the waypoint (door, stairs, etc.)
+      // Build a descriptive waypoint message
+      const waypointName = await this.getRoomName(waypointRoomId);
       const clockDir = this.directionTranslator.clockToSpeech(
         this.directionTranslator.compassToClock(refImg.compassHeading, session.currentCompassHeading)
       );
+
+      // Describe what they should see at this waypoint
+      let waypointDesc = `You've reached ${waypointName}.`;
+      if (nextSegment.doorwayType === 'door') {
+        waypointDesc = `You should be at a door near ${waypointName}.`;
+      } else if (nextSegment.doorwayType === 'archway') {
+        waypointDesc = `You should be at an archway near ${waypointName}.`;
+      } else if (nextSegment.doorwayType === 'stairs') {
+        waypointDesc = `You should be at the stairs near ${waypointName}.`;
+      }
 
       messages.push({
         type: 'request_visual',
@@ -1345,7 +1419,7 @@ export class NavigationEngine {
           trigger: {
             reason: 'waypoint_verification',
             priority: 'high',
-            message: `You've reached a waypoint. Please point your camera ${clockDir} and take a photo to verify.`,
+            message: `${waypointDesc} Please point your camera ${clockDir} to verify.`,
             capture: {
               mode: 'tap' as const,
               delaySeconds: 0,
@@ -1368,14 +1442,24 @@ export class NavigationEngine {
       return messages;
     }
 
-    // No reference image at waypoint — just give the turn instruction
+    // No reference image at waypoint — give a rich turn instruction
+    const toRoomName = await this.getRoomName(nextSegment.toRoomId);
+    const actionDesc = this.getActionDescForRoom(session, waypointRoomId);
+    const isDestination = nextSegment.toRoomId === session.destinationRoomId;
+
     const turnInstruction = this.directionTranslator.generateInstruction(
       nextSegment.action,
       nextSegment.compassHeading,
       session.currentCompassHeading,
       nextSegment.distanceSteps,
       nextSegment.expectedLandmarks?.[0],
-      nextSegment.expectedLandmarks
+      nextSegment.expectedLandmarks,
+      {
+        doorwayType: nextSegment.doorwayType,
+        actionDescription: actionDesc,
+        toRoomName,
+        isDestination,
+      }
     );
 
     // Update dedup tracker so we don't immediately repeat this
@@ -1406,14 +1490,154 @@ export class NavigationEngine {
   }
 
   /**
+   * Looks up a room name from DB. Used for richer speech.
+   */
+  private async getRoomName(roomId: string): Promise<string> {
+    try {
+      const room = await this.prisma.room.findUnique({
+        where: { id: roomId },
+        select: { name: true },
+      });
+      return room?.name || 'the next area';
+    } catch {
+      return 'the next area';
+    }
+  }
+
+  /**
+   * Gets action description from reference images for a room.
+   */
+  private getActionDescForRoom(session: NavigationSessionRuntime, roomId: string): string | undefined {
+    const refImages = session.roomReferenceImages?.get(roomId);
+    if (!refImages || refImages.length === 0) return undefined;
+    // Pick first image with an actionDescription
+    for (const img of refImages) {
+      if (img.actionDescription) return img.actionDescription;
+    }
+    return undefined;
+  }
+
+  /**
+   * Public wrapper for building arrival speech.
+   * Called by WebSocket handlers when visual is skipped at destination.
+   */
+  async getArrivalSpeech(sessionId: string): Promise<string> {
+    const session = this.sessions.get(sessionId);
+    if (!session) return 'You have reached your destination.';
+    const arrival = await this.buildArrivalSpeech(session);
+    return `${arrival.confirmSpeech} ${arrival.completeSpeech}`;
+  }
+
+  /**
+   * Builds a descriptive arrival speech using destination room features.
+   * Combines room name, type, landmarks, and reference image descriptions
+   * into a natural spoken confirmation.
+   */
+  private async buildArrivalSpeech(
+    session: NavigationSessionRuntime
+  ): Promise<{ confirmSpeech: string; completeSpeech: string }> {
+    const destRoomId = session.destinationRoomId;
+
+    // Fetch destination room details from DB
+    let roomName = 'your destination';
+    let roomType = '';
+    const features: string[] = [];
+
+    try {
+      const room = await this.prisma.room.findUnique({
+        where: { id: destRoomId },
+        select: {
+          name: true,
+          type: true,
+          landmarks: { select: { name: true, description: true } },
+          referenceImages: {
+            select: { description: true, detectedLandmarks: true },
+            orderBy: { capturedAt: 'desc' },
+            take: 1,
+          },
+        },
+      });
+
+      if (room) {
+        roomName = room.name;
+        roomType = room.type;
+
+        // Gather landmark names
+        if (room.landmarks && room.landmarks.length > 0) {
+          for (const lm of room.landmarks) {
+            if (lm.name) features.push(lm.name);
+          }
+        }
+
+        // Gather features from reference image analysis
+        if (room.referenceImages && room.referenceImages.length > 0) {
+          const refImg = room.referenceImages[0];
+          if (refImg.detectedLandmarks) {
+            try {
+              const parsed = JSON.parse(refImg.detectedLandmarks);
+              if (Array.isArray(parsed)) {
+                for (const f of parsed) {
+                  if (typeof f === 'string' && !features.includes(f)) features.push(f);
+                }
+              }
+            } catch { /* ignore */ }
+          }
+          if (refImg.description && features.length === 0) {
+            features.push(refImg.description);
+          }
+        }
+      }
+    } catch (err) {
+      logger.warn(`[NavigationEngine] Could not load destination room details: ${err}`);
+    }
+
+    // Build the feature description
+    const uniqueFeatures = [...new Set(features)].slice(0, 3);
+    let featureDesc = '';
+    if (uniqueFeatures.length > 0) {
+      featureDesc = `, I can see ${uniqueFeatures.join(', ')}`;
+    }
+
+    // Build spatial orientation — where is the destination relative to user?
+    let spatialHint = '';
+    const lastSegment = session.path[session.path.length - 1];
+    if (lastSegment) {
+      const clock = this.directionTranslator.compassToClock(
+        lastSegment.compassHeading,
+        session.currentCompassHeading
+      );
+      const dirSpeech = this.directionTranslator.clockToSpeech(clock);
+      spatialHint = `. ${roomName} is ${dirSpeech}`;
+    }
+
+    // Build doorway context
+    let doorwayHint = '';
+    if (lastSegment?.doorwayType) {
+      switch (lastSegment.doorwayType) {
+        case 'door': doorwayHint = ' through the door'; break;
+        case 'archway': doorwayHint = ' through the archway'; break;
+        case 'opening': doorwayHint = ' through the opening'; break;
+      }
+    }
+
+    // Confirmation speech
+    const confirmSpeech = `Confirmed${spatialHint}${doorwayHint}${featureDesc}.`;
+
+    // Completion speech
+    const completeSpeech = `You have successfully reached ${roomName}. Navigation complete.`;
+
+    return { confirmSpeech, completeSpeech };
+  }
+
+  /**
    * Generates current navigation instruction for the active segment.
    * Uses stepsRemaining (integer) so the speech text changes as user walks,
    * enabling the dedup logic in processSensorUpdate to detect changes.
    */
-  private generateCurrentInstruction(
+  private async generateCurrentInstruction(
     session: NavigationSessionRuntime,
     userHeading: number
-  ): string {
+  ): Promise<string> {
     const currentSegment = session.path[session.currentSegmentIndex];
     if (!currentSegment) {
       return '';
@@ -1424,14 +1648,36 @@ export class NavigationEngine {
       Math.round(currentSegment.distanceSteps - session.stepsTakenInSegment)
     );
 
-    // Generate instruction using direction translator
+    // Build context for richer instructions
+    const actionDesc = this.getActionDescForRoom(session, currentSegment.fromRoomId);
+    const isDestination = currentSegment.toRoomId === session.destinationRoomId;
+
+    // Look up destination room name for the instruction
+    let toRoomName: string | undefined;
+    try {
+      const toRoom = await this.prisma.room.findUnique({
+        where: { id: currentSegment.toRoomId },
+        select: { name: true },
+      });
+      // Skip generic names like "Waypoint 1" — not useful in speech
+      if (toRoom?.name && !toRoom.name.toLowerCase().startsWith('waypoint')) {
+        toRoomName = toRoom.name;
+      }
+    } catch { /* ignore */ }
+
     const instruction = this.directionTranslator.generateInstruction(
       currentSegment.action,
       currentSegment.compassHeading,
       userHeading,
       stepsRemaining,
       currentSegment.expectedLandmarks[0],
-      currentSegment.expectedLandmarks
+      currentSegment.expectedLandmarks,
+      {
+        doorwayType: currentSegment.doorwayType,
+        actionDescription: actionDesc,
+        toRoomName,
+        isDestination,
+      }
     );
 
     // Append preview of next action if close to end of segment

@@ -70,6 +70,10 @@ const MAX_IMAGES_PER_ROOM = 10;
  */
 let visionClient: VisionClient | null = null;
 
+function isRefImageDebugEnabled(): boolean {
+  return process.env.REF_IMAGE_DEBUG === '1';
+}
+
 function getVisionClient(): VisionClient | null {
   if (!visionClient && config.VISION_API_URL) {
     visionClient = new VisionClient(config.VISION_API_URL);
@@ -206,6 +210,13 @@ export default async function imageRoutes(fastify: FastifyInstance) {
       const { flatId, roomId } = request.params as { flatId: string; roomId: string };
       const { imageData, locationTag, compassHeading } = request.body as UploadImageBody;
 
+      if (isRefImageDebugEnabled()) {
+        const len = typeof imageData === 'string' ? imageData.length : 0;
+        request.log.info(
+          `[Images][REF_IMAGE_DEBUG] Upload attempt flat=${flatId} room=${roomId} heading=${compassHeading} tag="${locationTag}" imageLen=${len}`
+        );
+      }
+
       // Validation
       if (!imageData || !locationTag || compassHeading === undefined) {
         return reply.code(400).send({
@@ -231,10 +242,21 @@ export default async function imageRoutes(fastify: FastifyInstance) {
       // Validate image
       const validation = validateBase64Image(imageData);
       if (!validation.valid) {
+        if (isRefImageDebugEnabled()) {
+          request.log.warn(
+            `[Images][REF_IMAGE_DEBUG] Validation failed flat=${flatId} room=${roomId}: ${validation.error}`
+          );
+        }
         return reply.code(400).send({
           error: 'validation_error',
           message: validation.error,
         });
+      }
+
+      if (isRefImageDebugEnabled()) {
+        request.log.info(
+          `[Images][REF_IMAGE_DEBUG] Validation ok flat=${flatId} room=${roomId} estimatedSizeBytes=${validation.sizeBytes}`
+        );
       }
 
       try {
@@ -295,6 +317,12 @@ export default async function imageRoutes(fastify: FastifyInstance) {
             detectedLandmarks: detectedLandmarks ? JSON.stringify(detectedLandmarks) : null,
           },
         });
+
+        if (isRefImageDebugEnabled()) {
+          request.log.info(
+            `[Images][REF_IMAGE_DEBUG] Saved reference image id=${image.id} room=${roomId} heading=${compassHeading}`
+          );
+        }
 
         request.log.info(`[Images] Created reference image: ${image.id} for room ${roomId}`);
 

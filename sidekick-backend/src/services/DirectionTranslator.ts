@@ -191,62 +191,125 @@ export class DirectionTranslator {
     userHeading: number,
     distanceSteps: number = 0,
     landmark?: string,
-    allLandmarks?: string[]
+    allLandmarks?: string[],
+    context?: {
+      doorwayType?: string;       // 'door', 'archway', 'opening', 'stairs'
+      actionDescription?: string; // AI-generated: "Open the white door"
+      toRoomName?: string;        // "Kitchen", "Hallway Junction"
+      isDestination?: boolean;    // true if this is the final segment
+    }
   ): string {
     const clock = this.compassToClock(targetHeading, userHeading);
     const direction = this.clockToSpeech(clock);
     
-    // Pick the best landmark hint: explicit single landmark, or first from array
+    // Pick the best landmark hint
     const landmarkHint = landmark || (allLandmarks && allLandmarks.length > 0 ? allLandmarks[0] : undefined);
+    
+    // Build doorway action phrase from context
+    let doorwayAction = '';
+    if (context?.actionDescription) {
+      // AI-generated action takes priority: "Open the white door", "Go through the archway"
+      doorwayAction = context.actionDescription;
+    } else if (context?.doorwayType) {
+      switch (context.doorwayType) {
+        case 'door':
+          doorwayAction = 'Open the door and go through';
+          break;
+        case 'archway':
+          doorwayAction = 'Go through the archway';
+          break;
+        case 'opening':
+          doorwayAction = 'Go through the opening';
+          break;
+        case 'stairs':
+          doorwayAction = 'Take the stairs carefully';
+          break;
+      }
+    }
+
+    // Build destination mention
+    const towardRoom = context?.toRoomName
+      ? (context.isDestination ? `toward ${context.toRoomName}` : `toward ${context.toRoomName}`)
+      : '';
     
     let instruction = '';
     
     switch (action) {
-      case 'walk':
+      case 'walk': {
         if (distanceSteps > 0) {
           instruction = `Walk ${direction}, about ${distanceSteps} step${distanceSteps !== 1 ? 's' : ''}`;
         } else {
           instruction = `Walk ${direction}`;
         }
-        if (landmarkHint) {
+        if (towardRoom) {
+          instruction += ` ${towardRoom}`;
+        }
+        if (doorwayAction) {
+          instruction += `. ${doorwayAction}`;
+        }
+        if (landmarkHint && !doorwayAction) {
           instruction += `. Look for ${landmarkHint}`;
         }
         break;
+      }
         
-      case 'turn':
-        // For turns, use the turn direction method for more natural language
+      case 'turn': {
         const turnDir = this.getTurnDirection(userHeading, targetHeading);
         instruction = turnDir.charAt(0).toUpperCase() + turnDir.slice(1);
-        if (landmarkHint) {
+        if (towardRoom) {
+          instruction += ` ${towardRoom}`;
+        }
+        if (doorwayAction) {
+          instruction += `. ${doorwayAction}`;
+        } else if (landmarkHint) {
           instruction += `, near ${landmarkHint}`;
         }
         break;
+      }
         
       case 'exit_room':
-        instruction = `Exit through door ${direction}`;
-        if (landmarkHint) {
+        if (doorwayAction) {
+          instruction = `${doorwayAction} ${direction}`;
+        } else {
+          instruction = `Exit through door ${direction}`;
+        }
+        if (towardRoom) {
+          instruction += ` ${towardRoom}`;
+        }
+        if (landmarkHint && !doorwayAction) {
           instruction += `, near the ${landmarkHint}`;
         }
         break;
         
-      case 'enter_room':
+      case 'enter_room': {
+        const roomDesc = context?.toRoomName || '';
         if (distanceSteps > 0) {
           instruction = `Walk ${direction}, about ${distanceSteps} step${distanceSteps !== 1 ? 's' : ''}`;
+          if (roomDesc) {
+            instruction += ` into ${roomDesc}`;
+          }
         } else {
-          instruction = `Continue ${direction}`;
+          instruction = roomDesc ? `Enter ${roomDesc}, ${direction}` : `Continue ${direction}`;
         }
-        if (landmarkHint) {
+        if (doorwayAction) {
+          instruction += `. ${doorwayAction}`;
+        } else if (landmarkHint) {
           instruction += `. You should see ${landmarkHint} nearby`;
         }
         break;
+      }
         
       default:
-        // Generic instruction for unknown actions
         instruction = `Go ${direction}`;
         if (distanceSteps > 0) {
           instruction += `, about ${distanceSteps} step${distanceSteps !== 1 ? 's' : ''}`;
         }
-        if (landmarkHint) {
+        if (towardRoom) {
+          instruction += ` ${towardRoom}`;
+        }
+        if (doorwayAction) {
+          instruction += `. ${doorwayAction}`;
+        } else if (landmarkHint) {
           instruction += `. Near ${landmarkHint}`;
         }
     }

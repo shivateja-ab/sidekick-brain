@@ -83,6 +83,7 @@ export interface VisionResponse {
  */
 export class VisionClient {
   private readonly apiUrl: string;
+  private readonly refImageDebug: boolean;
 
   /**
    * Creates a new VisionClient instance
@@ -105,6 +106,8 @@ export class VisionClient {
         'Vision API URL not provided. Set VISION_API_URL environment variable or pass apiUrl parameter.'
       );
     }
+
+    this.refImageDebug = process.env.REF_IMAGE_DEBUG === '1';
 
     // If the URL is a bare domain (no path), assume the vision endpoint is /api/vision
     // This avoids HTTP 405 errors when users configure VISION_API_URL as the site root.
@@ -249,6 +252,14 @@ export class VisionClient {
     const queryType = request.context.query;
     logger.log(`[VisionClient] Sending request: ${queryType}`);
 
+    if (this.refImageDebug) {
+      const curLen = typeof request.currentImage === 'string' ? request.currentImage.length : 0;
+      const refLen = typeof request.referenceImage === 'string' ? request.referenceImage.length : 0;
+      logger.log(
+        `[VisionClient][REF_IMAGE_DEBUG] POST ${this.apiUrl} query=${queryType} currentImageLen=${curLen} referenceImageLen=${refLen}`
+      );
+    }
+
     try {
       // Create AbortController for timeout
       const controller = new AbortController();
@@ -269,6 +280,11 @@ export class VisionClient {
 
         // Handle HTTP errors
         if (!response.ok) {
+          if (this.refImageDebug) {
+            logger.error(
+              `[VisionClient][REF_IMAGE_DEBUG] HTTP ${response.status} ${response.statusText} for query=${queryType} url=${this.apiUrl}`
+            );
+          }
           return this.handleHttpError(response, queryType);
         }
 
@@ -298,6 +314,13 @@ export class VisionClient {
           );
         }
 
+        if (this.refImageDebug) {
+          const msg = fetchError instanceof Error ? fetchError.message : String(fetchError);
+          logger.error(
+            `[VisionClient][REF_IMAGE_DEBUG] Fetch failed for query=${queryType} url=${this.apiUrl}: ${msg}`
+          );
+        }
+
         // Re-throw to be caught by outer catch
         throw fetchError;
       }
@@ -322,10 +345,14 @@ export class VisionClient {
     let errorMessage = 'Unknown HTTP error';
     let speech = "Something went wrong. Let's try again.";
 
+    const retryAfter = response.headers.get('retry-after');
+
     // Handle specific status codes
     if (response.status === 429) {
       errorMessage = 'Rate limit exceeded';
-      speech = 'Too many requests. Please wait a moment.';
+      speech = retryAfter
+        ? `Too many requests. Please wait ${retryAfter} seconds.`
+        : 'Too many requests. Please wait a moment.';
     } else if (response.status >= 500) {
       errorMessage = `Server error: ${response.status}`;
       speech = "Vision service error. Let's try again.";
@@ -341,6 +368,18 @@ export class VisionClient {
       }
       if (errorBody.speech) {
         speech = errorBody.speech;
+      }
+
+      // Some upstreams incorrectly return 500 for rate limits.
+      // Normalize based on message so we can give the user a better instruction.
+      if (
+        response.status >= 500 &&
+        typeof errorMessage === 'string' &&
+        errorMessage.toLowerCase().includes('rate limit')
+      ) {
+        speech = retryAfter
+          ? `Too many requests. Please wait ${retryAfter} seconds.`
+          : 'Too many requests. Please wait a moment.';
       }
     } catch {
       // Ignore JSON parse errors, use defaults

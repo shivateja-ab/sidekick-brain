@@ -49,15 +49,38 @@ export class PathFinder {
       roomMap.set(room.id, room as RoomWithContext);
     }
 
+    const fromRoom = roomMap.get(fromRoomId);
+    const toRoom = roomMap.get(toRoomId);
+    console.log(
+      `[PathFinder] Finding path: "${fromRoom?.name || 'UNKNOWN'}" (${fromRoomId}) → ` +
+      `"${toRoom?.name || 'UNKNOWN'}" (${toRoomId})`
+    );
+    console.log(`[PathFinder] Total rooms: ${rooms.length}, Total doorways: ${doorways.length}`);
+
+    // Validate rooms exist
+    if (!fromRoom) {
+      throw new Error(`Start room not found in flat: ${fromRoomId}`);
+    }
+    if (!toRoom) {
+      throw new Error(`Destination room not found in flat: ${toRoomId}`);
+    }
+
     // Index forward doorways by fromRoomId.
-    // A room may have multiple outgoing doorways (e.g. corridor with branches),
-    // but for a guided-mapped linear route there is typically one per room
-    // in the forward direction.
     const outgoing = new Map<string, Doorway[]>();
     for (const d of doorways) {
       const list = outgoing.get(d.fromRoomId) || [];
       list.push(d);
       outgoing.set(d.fromRoomId, list);
+    }
+
+    // Log all connections for debugging
+    for (const [roomId, dws] of outgoing) {
+      const rName = roomMap.get(roomId)?.name || roomId.slice(0, 8);
+      const targets = dws.map(d => {
+        const tName = roomMap.get(d.toRoomId)?.name || d.toRoomId.slice(0, 8);
+        return `${tName}(${d.distanceSteps}steps)`;
+      }).join(', ');
+      console.log(`[PathFinder]   ${rName} → [${targets}]`);
     }
 
     // Follow the chain from start to destination
@@ -68,16 +91,23 @@ export class PathFinder {
     while (currentRoomId !== toRoomId) {
       if (visited.has(currentRoomId)) {
         throw new Error(
-          `Circular route detected at room ${currentRoomId}. ` +
-          `Cannot find path from ${fromRoomId} to ${toRoomId}.`
+          `Circular route detected at room ${roomMap.get(currentRoomId)?.name || currentRoomId}. ` +
+          `Cannot find path from ${fromRoom.name} to ${toRoom.name}.`
         );
       }
       visited.add(currentRoomId);
 
       const candidates = outgoing.get(currentRoomId) || [];
+      const currentName = roomMap.get(currentRoomId)?.name || currentRoomId.slice(0, 8);
+
+      if (candidates.length === 0) {
+        console.error(
+          `[PathFinder] DEAD END: "${currentName}" has no outgoing doorways. ` +
+          `Rooms with connections: [${[...outgoing.keys()].map(id => roomMap.get(id)?.name || id.slice(0, 8)).join(', ')}]`
+        );
+      }
 
       // Try to find a doorway that leads closer to the destination.
-      // Prefer a doorway whose toRoomId we haven't visited yet.
       let doorway: Doorway | undefined;
 
       // First: direct link to destination
@@ -90,7 +120,8 @@ export class PathFinder {
 
       if (!doorway) {
         throw new Error(
-          `No route from room ${currentRoomId} toward ${toRoomId}. ` +
+          `No route from "${currentName}" toward "${toRoom.name}". ` +
+          `"${currentName}" has ${candidates.length} connection(s) but none lead forward. ` +
           `Make sure the route was fully mapped with guided mapping.`
         );
       }

@@ -349,11 +349,14 @@ export async function handleVisualSkipped(
     if (allSegmentsComplete) {
       (session as any).status = 'completed';
       logger.log(`[WS] Visual skipped at destination — completing navigation anyway`);
+
+      const arrivalSpeech = await navigationEngine.getArrivalSpeech(client.sessionId);
+
       return [
         {
           type: 'navigation_complete',
           payload: {
-            speech: 'You have reached your destination.',
+            speech: arrivalSpeech,
           },
         },
       ];
@@ -678,14 +681,18 @@ export async function handleRepeat(
       ];
     }
 
-    // Generate instruction
+    // Generate instruction with full context
     const directionTranslator = (services as any).directionTranslator;
     const instruction = directionTranslator.generateInstruction(
       currentSegment.action,
       currentSegment.compassHeading,
       session.currentCompassHeading,
       currentSegment.distanceSteps - session.stepsTakenInSegment,
-      currentSegment.expectedLandmarks[0]
+      currentSegment.expectedLandmarks[0],
+      currentSegment.expectedLandmarks,
+      {
+        doorwayType: currentSegment.doorwayType,
+      }
     );
 
     return [

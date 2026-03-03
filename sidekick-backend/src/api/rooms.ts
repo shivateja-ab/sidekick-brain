@@ -604,49 +604,58 @@ export default async function roomRoutes(fastify: FastifyInstance) {
         await verifyRoomOwnership(flatId, roomId, authUser.userId);
         await verifyRoomOwnership(flatId, toRoomId, authUser.userId);
 
-        // Check if doorway already exists
-        const existingDoorway = await prisma.doorway.findFirst({
-          where: {
-            fromRoomId: roomId,
-            toRoomId: toRoomId,
-          },
+        // Upsert forward doorway (update if exists, create if not)
+        const existingForward = await prisma.doorway.findFirst({
+          where: { fromRoomId: roomId, toRoomId: toRoomId },
         });
 
-        if (existingDoorway) {
-          return reply.code(409).send({
-            error: 'conflict',
-            message: 'Doorway already exists between these rooms',
+        let doorway;
+        if (existingForward) {
+          // Update existing with new measurements (re-mapping the same connection)
+          doorway = await prisma.doorway.update({
+            where: { id: existingForward.id },
+            data: { compassHeading, distanceSteps: distanceSteps || existingForward.distanceSteps, type: type || existingForward.type },
           });
+          request.log.info(`[Rooms] Updated existing doorway: ${doorway.id} from ${roomId} to ${toRoomId}`);
+        } else {
+          doorway = await prisma.doorway.create({
+            data: {
+              fromRoomId: roomId,
+              toRoomId: toRoomId,
+              positionX,
+              positionY,
+              compassHeading,
+              distanceSteps: distanceSteps || 2,
+              type: type || 'door',
+            },
+          });
+          request.log.info(`[Rooms] Created doorway: ${doorway.id} from ${roomId} to ${toRoomId}`);
         }
 
-        // Create forward doorway
-        const doorway = await prisma.doorway.create({
-          data: {
-            fromRoomId: roomId,
-            toRoomId: toRoomId,
-            positionX,
-            positionY,
-            compassHeading,
-            distanceSteps: distanceSteps || 2,
-            type: type || 'door',
-          },
-        });
-
-        // Create reverse doorway (bidirectional)
+        // Upsert reverse doorway (bidirectional)
         const reverseHeading = (compassHeading + 180) % 360;
-        await prisma.doorway.create({
-          data: {
-            fromRoomId: toRoomId,
-            toRoomId: roomId,
-            positionX,
-            positionY,
-            compassHeading: reverseHeading,
-            distanceSteps: distanceSteps || 2,
-            type: type || 'door',
-          },
+        const existingReverse = await prisma.doorway.findFirst({
+          where: { fromRoomId: toRoomId, toRoomId: roomId },
         });
 
-        request.log.info(`[Rooms] Created doorway: ${doorway.id} from ${roomId} to ${toRoomId}`);
+        if (existingReverse) {
+          await prisma.doorway.update({
+            where: { id: existingReverse.id },
+            data: { compassHeading: reverseHeading, distanceSteps: distanceSteps || existingReverse.distanceSteps, type: type || existingReverse.type },
+          });
+        } else {
+          await prisma.doorway.create({
+            data: {
+              fromRoomId: toRoomId,
+              toRoomId: roomId,
+              positionX,
+              positionY,
+              compassHeading: reverseHeading,
+              distanceSteps: distanceSteps || 2,
+              type: type || 'door',
+            },
+          });
+        }
 
         return reply.code(201).send({
           id: doorway.id,
